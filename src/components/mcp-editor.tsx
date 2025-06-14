@@ -2,7 +2,7 @@
 import { useState, useMemo } from "react";
 import {
   MCPServerConfig,
-  MCPSseConfigZodSchema,
+  MCPRemoteConfigZodSchema,
   MCPStdioConfigZodSchema,
 } from "app-types/mcp";
 import { Input } from "./ui/input";
@@ -19,18 +19,21 @@ import { mutate } from "swr";
 import { Loader } from "lucide-react";
 import {
   isMaybeMCPServerConfig,
-  isMaybeSseConfig,
+  isMaybeRemoteConfig,
 } from "lib/ai/mcp/is-mcp-config";
-import { updateMcpClientAction } from "@/app/api/mcp/actions";
-import { insertMcpClientAction } from "@/app/api/mcp/actions";
 
 import { Alert, AlertDescription, AlertTitle } from "ui/alert";
 import { z } from "zod";
 import { useTranslations } from "next-intl";
+import {
+  existMcpClientByServerNameAction,
+  saveMcpClientAction,
+} from "@/app/api/mcp/actions";
 
 interface MCPEditorProps {
   initialConfig?: MCPServerConfig;
   name?: string;
+  id?: string;
 }
 
 const STDIO_ARGS_ENV_PLACEHOLDER = `/** STDIO Example */
@@ -42,7 +45,7 @@ const STDIO_ARGS_ENV_PLACEHOLDER = `/** STDIO Example */
   }
 }
 
-/** SSE Example */
+/** SSE,Streamable HTTP Example */
 {
   "url": "https://api.example.com",
   "headers": {
@@ -53,9 +56,11 @@ const STDIO_ARGS_ENV_PLACEHOLDER = `/** STDIO Example */
 export default function MCPEditor({
   initialConfig,
   name: initialName,
+  id,
 }: MCPEditorProps) {
   const t = useTranslations();
-  const shouldInsert = useMemo(() => isNull(initialName), [initialName]);
+  const shouldInsert = useMemo(() => isNull(id), [id]);
+
   const [isLoading, setIsLoading] = useState(false);
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
@@ -101,8 +106,8 @@ export default function MCPEditor({
 
   // Validate
   const validateConfig = (jsonConfig: unknown): boolean => {
-    const result = isMaybeSseConfig(jsonConfig)
-      ? MCPSseConfigZodSchema.safeParse(jsonConfig)
+    const result = isMaybeRemoteConfig(jsonConfig)
+      ? MCPRemoteConfigZodSchema.safeParse(jsonConfig)
       : MCPStdioConfigZodSchema.safeParse(jsonConfig);
     if (!result.success) {
       handleErrorWithToast(result.error, "mcp-editor-error");
@@ -129,12 +134,21 @@ export default function MCPEditor({
     }
 
     safe(() => setIsLoading(true))
+      .map(async () => {
+        if (shouldInsert) {
+          const exist = await existMcpClientByServerNameAction(name);
+          if (exist) {
+            throw new Error(t("MCP.nameAlreadyExists"));
+          }
+        }
+      })
       .map(() =>
-        shouldInsert
-          ? insertMcpClientAction(name, config)
-          : updateMcpClientAction(name, config),
+        saveMcpClientAction({
+          name,
+          config,
+          id,
+        }),
       )
-      .watch(() => setIsLoading(false))
       .ifOk(() => toast.success(t("MCP.configurationSavedSuccessfully")))
       .watch(watchOk(() => mutate("mcp-list")))
       .ifOk(() => router.push("/mcp"))

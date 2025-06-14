@@ -1,3 +1,4 @@
+import "server-only";
 import {
   betterAuth,
   MiddlewareInputContext,
@@ -18,6 +19,8 @@ import { safe } from "ts-safe";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { compare } from "bcrypt-ts";
 import { toAny } from "lib/utils";
+import logger from "logger";
+import { redirect } from "next/navigation";
 
 export const auth = betterAuth({
   plugins: [nextCookies()],
@@ -84,9 +87,18 @@ export const auth = betterAuth({
 
 export const getSession = async () => {
   "use server";
-  const session = await auth.api.getSession({
-    headers: await headers(),
-  });
+  const session = await auth.api
+    .getSession({
+      headers: await headers(),
+    })
+    .catch((e) => {
+      logger.error(e);
+      return null;
+    });
+
+  if (!session) {
+    return redirect("/sign-in");
+  }
   return session;
 };
 

@@ -37,11 +37,7 @@ export function ChatBotTemporary() {
   const t = useTranslations("Chat.TemporaryChat");
 
   const [temporaryChat, appStoreMutate] = appStore(
-    useShallow((state) => [
-      state.temporaryChat,
-
-      state.mutate,
-    ]),
+    useShallow((state) => [state.temporaryChat, state.mutate]),
   );
   const [isInstructionsOpen, setIsInstructionsOpen] = useState(false);
 
@@ -68,7 +64,7 @@ export function ChatBotTemporary() {
     api: "/api/chat/temporary",
     experimental_throttle: 100,
     body: {
-      model: temporaryChat.model,
+      chatModel: temporaryChat.chatModel,
       instructions: temporaryChat.instructions,
     },
     onError: () => {
@@ -260,6 +256,20 @@ function DrawerTemporaryContent({
     }
   }, [isLoading]);
 
+  useEffect(() => {
+    if (!temporaryChat.chatModel) {
+      appStoreMutate((state) => {
+        if (!state.chatModel) return state;
+        return {
+          temporaryChat: {
+            ...temporaryChat,
+            chatModel: state.chatModel,
+          },
+        };
+      });
+    }
+  }, [Boolean(temporaryChat.chatModel)]);
+
   return (
     <div
       className={cn("flex flex-col min-w-0 h-full flex-1 overflow-y-hidden")}
@@ -302,12 +312,12 @@ function DrawerTemporaryContent({
         <PromptInput
           input={input}
           append={append}
-          model={temporaryChat.model}
+          model={temporaryChat.chatModel}
           setModel={(model) => {
             appStoreMutate({
               temporaryChat: {
                 ...temporaryChat,
-                model,
+                chatModel: model,
               },
             });
           }}

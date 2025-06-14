@@ -1,6 +1,5 @@
 import { selectMcpClientsAction } from "@/app/api/mcp/actions";
 import { appStore } from "@/app/store";
-import { useStateWithBrowserStorage } from "@/hooks/use-state-with-browserstorage";
 import { AppDefaultToolkit } from "app-types/chat";
 import { AllowedMCPServer, MCPServerInfo } from "app-types/mcp";
 import { cn } from "lib/utils";
@@ -58,11 +57,11 @@ interface ToolSelectDropdownProps {
 
 const calculateToolCount = (
   allowedMcpServers: Record<string, AllowedMCPServer>,
-  mcpList: MCPServerInfo[],
+  mcpList: (MCPServerInfo & { id: string })[],
 ) => {
   return mcpList.reduce((acc, server) => {
     const count =
-      allowedMcpServers[server.name]?.tools?.length ?? server.toolInfo.length;
+      allowedMcpServers[server.id]?.tools?.length ?? server.toolInfo.length;
     return acc + count;
   }, 0);
 };
@@ -123,31 +122,25 @@ export function ToolSelectDropdown({
   );
 }
 
-const PRESET_KEY = "~tools-presets";
-
-interface Preset {
-  allowedMcpServers?: Record<string, AllowedMCPServer>;
-  allowedAppDefaultToolkit?: AppDefaultToolkit[];
-  name: string;
-}
-
 function ToolPresets() {
-  const [appStoreMutate, allowedMcpServers, allowedAppDefaultToolkit, mcpList] =
-    appStore(
-      useShallow((state) => [
-        state.mutate,
-        state.allowedMcpServers,
-        state.allowedAppDefaultToolkit,
-        state.mcpList,
-      ]),
-    );
+  const [
+    appStoreMutate,
+    presets,
+    allowedMcpServers,
+    allowedAppDefaultToolkit,
+    mcpList,
+  ] = appStore(
+    useShallow((state) => [
+      state.mutate,
+      state.toolPresets,
+      state.allowedMcpServers,
+      state.allowedAppDefaultToolkit,
+      state.mcpList,
+    ]),
+  );
   const [open, setOpen] = useState(false);
   const [presetName, setPresetName] = useState("");
   const t = useTranslations();
-  const [presets, setPresets] = useStateWithBrowserStorage<Preset[]>(
-    PRESET_KEY,
-    [],
-  );
 
   const presetWithToolCount = useMemo(() => {
     return presets.map((preset) => ({
@@ -166,10 +159,14 @@ function ToolPresets() {
         toast.error(t("Chat.Tool.presetNameAlreadyExists"));
         return;
       }
-      setPresets((prev) => [
-        ...prev,
-        { name, allowedMcpServers, allowedAppDefaultToolkit },
-      ]);
+      appStoreMutate((prev) => {
+        return {
+          toolPresets: [
+            ...prev.toolPresets,
+            { name, allowedMcpServers, allowedAppDefaultToolkit },
+          ],
+        };
+      });
       setPresetName("");
       setOpen(false);
       toast.success(t("Chat.Tool.presetSaved"));
@@ -178,10 +175,14 @@ function ToolPresets() {
   );
 
   const deletePreset = useCallback((index: number) => {
-    setPresets((prev) => prev.filter((_, i) => i !== index));
+    appStoreMutate((prev) => {
+      return {
+        toolPresets: prev.toolPresets.filter((_, i) => i !== index),
+      };
+    });
   }, []);
 
-  const applyPreset = useCallback((preset: Preset) => {
+  const applyPreset = useCallback((preset: (typeof presets)[number]) => {
     appStoreMutate({
       allowedMcpServers: preset.allowedMcpServers,
       allowedAppDefaultToolkit: preset.allowedAppDefaultToolkit,
@@ -308,10 +309,10 @@ function McpServerSelector() {
       )
       .map((server) => {
         const allowedTools: string[] =
-          allowedMcpServers?.[server.name]?.tools ??
+          allowedMcpServers?.[server.id]?.tools ??
           server.toolInfo.map((tool) => tool.name);
         return {
-          id: server.name,
+          id: server.id,
           serverName: server.name,
           checked: allowedTools.length > 0,
           tools: server.toolInfo.map((tool) => ({
@@ -326,13 +327,13 @@ function McpServerSelector() {
   }, [mcpServerList, allowedMcpServers]);
 
   const setMcpServerTool = useCallback(
-    (serverName: string, toolNames: string[]) => {
+    (serverId: string, toolNames: string[]) => {
       appStoreMutate((prev) => {
         return {
           allowedMcpServers: {
             ...prev.allowedMcpServers,
-            [serverName]: {
-              ...(prev.allowedMcpServers?.[serverName] ?? {}),
+            [serverId]: {
+              ...(prev.allowedMcpServers?.[serverId] ?? {}),
               tools: toolNames,
             },
           },
@@ -395,68 +396,112 @@ function McpServerSelector() {
               ) : null}
             </DropdownMenuSubTrigger>
             <DropdownMenuPortal>
-              <DropdownMenuSubContent className="w-80 max-h-96 overflow-y-auto">
-                <DropdownMenuLabel
-                  className="text-muted-foreground flex items-center gap-2"
-                  onClick={(e) => {
-                    e.preventDefault();
+              <DropdownMenuSubContent className="w-80 relative">
+                <McpServerToolSelector
+                  tools={server.tools}
+                  checked={server.checked}
+                  onClickAllChecked={(checked) => {
                     setMcpServerTool(
                       server.id,
-                      server.checked ? [] : server.tools.map((t) => t.name),
+                      checked ? server.tools.map((t) => t.name) : [],
                     );
                   }}
-                >
-                  {server.serverName}
-                  <div className="flex-1" />
-                  <Switch checked={server.checked} />
-                </DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                {server.tools.length === 0 ? (
-                  <div className="text-sm text-muted-foreground w-full h-full flex items-center justify-center py-6">
-                    No tools available for this server.
-                  </div>
-                ) : (
-                  server.tools.map((tool) => (
-                    <DropdownMenuItem
-                      key={tool.name}
-                      className="flex items-center gap-2 cursor-pointer mb-1"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        if (tool.checked) {
-                          setMcpServerTool(
-                            server.id,
-                            server.tools
-                              .filter((t) => t.checked && t.name != tool.name)
-                              .map((t) => t.name),
-                          );
-                        } else {
-                          setMcpServerTool(server.id, [
-                            ...server.tools
-                              .filter((t) => t.checked)
-                              .map((t) => t.name),
-                            tool.name,
-                          ]);
-                        }
-                      }}
-                    >
-                      <div className="mx-1 flex-1 min-w-0">
-                        <p className="font-medium text-xs mb-1 truncate">
-                          {tool.name}
-                        </p>
-                        <p className="text-xs text-muted-foreground truncate">
-                          {tool.description}
-                        </p>
-                      </div>
-                      <Checkbox checked={tool.checked} className="ml-auto" />
-                    </DropdownMenuItem>
-                  ))
-                )}
+                  onToolClick={(toolName, checked) => {
+                    setMcpServerTool(
+                      server.id,
+                      checked
+                        ? [toolName]
+                        : server.tools
+                            .filter((t) => t.name !== toolName)
+                            .map((t) => t.name),
+                    );
+                  }}
+                />
               </DropdownMenuSubContent>
             </DropdownMenuPortal>
           </DropdownMenuSub>
         ))
       )}
     </DropdownMenuGroup>
+  );
+}
+
+interface McpServerToolSelectorProps {
+  tools: {
+    name: string;
+    checked: boolean;
+    description: string;
+  }[];
+  onClickAllChecked: (checked: boolean) => void;
+  checked: boolean;
+  onToolClick: (toolName: string, checked: boolean) => void;
+}
+function McpServerToolSelector({
+  tools,
+  onClickAllChecked,
+  checked,
+  onToolClick,
+}: McpServerToolSelectorProps) {
+  const t = useTranslations("Common");
+  const [search, setSearch] = useState("");
+  const filteredTools = useMemo(() => {
+    return tools.filter((tool) =>
+      tool.name.toLowerCase().includes(search.toLowerCase()),
+    );
+  }, [tools, search]);
+  return (
+    <div>
+      <DropdownMenuLabel
+        className="text-muted-foreground flex items-center gap-2"
+        onClick={(e) => {
+          e.preventDefault();
+          onClickAllChecked(!checked);
+        }}
+      >
+        <input
+          autoFocus
+          placeholder={t("search")}
+          value={search}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+          }}
+          onChange={(e) => setSearch(e.target.value)}
+          onClick={(e) => {
+            e.stopPropagation();
+          }}
+          className="placeholder:text-muted-foreground flex w-full text-xs   outline-hidden disabled:cursor-not-allowed disabled:opacity-50"
+        />
+        <div className="flex-1" />
+        <Switch checked={checked} />
+      </DropdownMenuLabel>
+      <DropdownMenuSeparator />
+      <div className="max-h-96 overflow-y-auto">
+        {filteredTools.length === 0 ? (
+          <div className="text-sm text-muted-foreground w-full h-full flex items-center justify-center py-6">
+            No tools available for this server.
+          </div>
+        ) : (
+          filteredTools.map((tool) => (
+            <DropdownMenuItem
+              key={tool.name}
+              className="flex items-center gap-2 cursor-pointer mb-1"
+              onClick={(e) => {
+                e.preventDefault();
+                onToolClick(tool.name, !tool.checked);
+              }}
+            >
+              <div className="mx-1 flex-1 min-w-0">
+                <p className="font-medium text-xs mb-1 truncate">{tool.name}</p>
+                <p className="text-xs text-muted-foreground truncate">
+                  {tool.description}
+                </p>
+              </div>
+              <Checkbox checked={tool.checked} className="ml-auto" />
+            </DropdownMenuItem>
+          ))
+        )}
+      </div>
+    </div>
   );
 }
 

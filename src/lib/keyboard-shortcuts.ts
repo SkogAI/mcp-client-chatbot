@@ -32,6 +32,7 @@ const toggleVoiceChatShortcut: Shortcut = {
   shortcut: {
     key: "I",
     command: true,
+    shift: true,
   },
 };
 
@@ -64,7 +65,7 @@ const lastMessageCopyShortcut: Shortcut = {
 const openChatPreferencesShortcut: Shortcut = {
   description: "openChatPreferences",
   shortcut: {
-    key: "I",
+    key: "L",
     command: true,
     shift: true,
   },

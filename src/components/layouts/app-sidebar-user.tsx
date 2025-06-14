@@ -105,7 +105,9 @@ export function AppSidebarUser() {
               <Settings2 className="size-4 text-foreground" />
               <span>{t("chatPreferences")}</span>
             </DropdownMenuItem>
-
+            <SelectTheme />
+            <SelectLanguage />
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               className="cursor-pointer"
               onClick={() => appStoreMutate({ openShortcutsPopup: true })}
@@ -113,10 +115,6 @@ export function AppSidebarUser() {
               <Command className="size-4 text-foreground" />
               <span>{t("keyboardShortcuts")}</span>
             </DropdownMenuItem>
-
-            <SelectTheme />
-            <SelectLanguage />
-            <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => {
                 window.open(
