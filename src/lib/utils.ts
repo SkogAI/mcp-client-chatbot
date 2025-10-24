@@ -1,25 +1,30 @@
-import type { UIMessage } from "ai";
-import type { ChatMessage } from "app-types/chat";
 import { type ClassValue, clsx } from "clsx";
+import { JSONSchema7 } from "json-schema";
 import { twMerge } from "tailwind-merge";
+import z from "zod";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export const fetcher = async (url: string) => {
+export const fetcher = async (url: string, options?: RequestInit) => {
   const res = await fetch(url, {
     redirect: "follow",
+    cache: "no-store",
+    ...options,
   });
 
   if (!res.ok) {
-    const error = new Error("An error occurred while fetching the data.");
-
-    Object.assign(error, {
-      info: await res.json(),
-      status: res.status,
-    });
-
+    let errorPayload;
+    try {
+      errorPayload = await res.json();
+    } catch {
+      errorPayload = { message: `Request failed with status ${res.status}` };
+    }
+    const error = new Error(
+      errorPayload.message || "An error occurred while fetching the data.",
+    );
+    Object.assign(error, { info: errorPayload, status: res.status });
     throw error;
   }
 
@@ -86,6 +91,41 @@ export const createDebounce = () => {
   return debounce;
 };
 
+export const createThrottle = () => {
+  let lastCall = 0;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+
+  const throttle = (func: (...args: any[]) => any, waitFor = 200) => {
+    const now = Date.now();
+    const timeSinceLastCall = now - lastCall;
+
+    if (timeSinceLastCall >= waitFor) {
+      lastCall = now;
+      func();
+    } else {
+      // Schedule the next call if not already scheduled
+      if (!timeout) {
+        const remainingTime = waitFor - timeSinceLastCall;
+        timeout = setTimeout(() => {
+          lastCall = Date.now();
+          func();
+          timeout = null;
+        }, remainingTime);
+      }
+    }
+  };
+
+  throttle.clear = () => {
+    if (timeout) {
+      clearTimeout(timeout);
+      timeout = null;
+    }
+    lastCall = 0;
+  };
+
+  return throttle;
+};
+
 export const groupBy = <T>(arr: T[], getter: keyof T | ((item: T) => string)) =>
   arr.reduce(
     (prev, item) => {
@@ -127,7 +167,7 @@ export class Locker {
   private resolve?: () => void;
 
   get isLocked() {
-    return this.resolve != null;
+    return !!this.resolve;
   }
 
   lock() {
@@ -229,12 +269,32 @@ export function objectFlow<T extends Record<string, any>>(obj: T) {
     find(fn: (value: T[keyof T], key: keyof T) => any): T | undefined {
       return Object.entries(obj).find(([key, value]) => fn(value, key))?.[1];
     },
+    getByPath<U>(path: string[]): U | undefined {
+      let result: any = obj;
+      path.find((p) => {
+        result = result?.[p];
+        return !result;
+      });
+      return result;
+    },
+    setByPath(path: string[], value: any) {
+      path.reduce((acc, cur, i) => {
+        const isLast = i == path.length - 1;
+        if (isLast) {
+          acc[cur] = value;
+          return acc;
+        }
+        acc[cur] ??= {};
+        return acc[cur];
+      }, obj as object);
+      return obj;
+    },
   };
 }
 
 export function capitalizeFirstLetter(str: string): string {
   if (!str || str.length === 0) return str;
-  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+  return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
 export function truncateString(str: string, maxLength: number): string {
@@ -242,18 +302,130 @@ export function truncateString(str: string, maxLength: number): string {
   return str.slice(0, maxLength) + "...";
 }
 
-export function convertToUIMessage(message: ChatMessage): UIMessage {
-  const um: UIMessage = {
-    id: message.id,
-    parts: message.parts as UIMessage["parts"],
-    role: message.role as UIMessage["role"],
-    content: "",
-    annotations: message.annotations as UIMessage["annotations"],
-    createdAt: new Date(message.createdAt),
-  };
-  return um;
-}
-
 export async function nextTick() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+export function cleanVariableName(input: string = ""): string {
+  if (!input || typeof input !== "string") {
+    return "";
+  }
+
+  return input.replace(/[^\w\u0080-\uFFFF-]/g, "").replace(/^[0-9]+/, "");
+}
+
+export function generateUniqueKey(key: string, existingKeys: string[]) {
+  let newKey = key;
+  let counter = 1;
+
+  while (existingKeys.includes(newKey)) {
+    const baseKey = key.replace(/\d+$/, "");
+    const hasOriginalNumber = key !== baseKey;
+    if (hasOriginalNumber) {
+      const originalNumber = parseInt(key.match(/\d+$/)?.[0] || "0");
+      newKey = baseKey + (originalNumber + counter);
+    } else {
+      newKey = baseKey + counter;
+    }
+    counter++;
+  }
+  return newKey;
+}
+
+export function exclude<T extends object, K extends keyof T>(
+  obj: T,
+  keys: K[],
+): Omit<T, K> {
+  return Object.fromEntries(
+    Object.entries(obj).filter(([key]) => !keys.includes(key as K)),
+  ) as Omit<T, K>;
+}
+
+export function validateSchema(key: string, schema: JSONSchema7) {
+  const variableName = cleanVariableName(key);
+  if (variableName.length === 0) {
+    throw new Error("Invalid Variable Name");
+  }
+  if (variableName.length > 255) {
+    throw new Error("Variable Name is too long");
+  }
+  if (!schema.type) {
+    throw new Error("Invalid Schema");
+  }
+  if (schema.type == "array" || schema.type == "object") {
+    const keys = Array.from(Object.keys(schema.properties ?? {}));
+    if (keys.length != new Set(keys).size) {
+      throw new Error("Output data must have unique keys");
+    }
+    return keys.every((key) => {
+      return validateSchema(key, schema.properties![key] as JSONSchema7);
+    });
+  }
+  return true;
+}
+
+export const createEmitter = () => {
+  const listeners = new Set<(value: string) => void>();
+  return {
+    on: (listener: (value: string) => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    off: (listener: (value: string) => void) => {
+      listeners.delete(listener);
+    },
+    emit: (value: string) => {
+      listeners.forEach((listener) => listener(value));
+    },
+  };
+};
+
+export function deduplicateByKey<T>(arr: T[], key: keyof T): T[] {
+  const seen = new Set<T[keyof T]>();
+  return arr.filter((item) => {
+    const keyValue = item[key];
+    if (seen.has(keyValue)) {
+      return false;
+    } else {
+      seen.add(keyValue);
+      return true;
+    }
+  });
+}
+
+export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error("Timeout"));
+    }, ms);
+    promise
+      .then((res) => {
+        clearTimeout(timer);
+        resolve(res);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+export function parseEnvBoolean(value: string | boolean | undefined): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const lowerVal = value.toLowerCase();
+    return lowerVal === "true" || lowerVal === "1" || lowerVal === "y";
+  }
+  return false;
+}
+
+const booleans = ["true", "false", true, false, 1, 0, "1", "0"];
+export const booleanCoerced = z
+  .any()
+  .refine((val) => booleans.includes(val), { message: "must be boolean" })
+  .transform((val) => {
+    if (val === "true" || val === true || val === "1" || val === 1) return true;
+    return false;
+  });

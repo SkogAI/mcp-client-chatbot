@@ -1,3 +1,5 @@
+"use client";
+
 import { motion } from "framer-motion";
 import { ReactNode, useRef, useLayoutEffect, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -6,7 +8,7 @@ interface AutoHeightProps {
   children: ReactNode;
   className?: string;
   duration?: number;
-  ease?: string;
+  ease?: "easeIn" | "easeOut" | "easeInOut" | "linear";
 }
 
 export function AutoHeight({

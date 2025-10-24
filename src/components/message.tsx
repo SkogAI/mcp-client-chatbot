@@ -1,76 +1,66 @@
 "use client";
 
-import type { UIMessage } from "ai";
+import { isToolUIPart, type UIMessage } from "ai";
 import { memo, useMemo, useState } from "react";
-import equal from "fast-deep-equal";
+import equal from "lib/equal";
 
 import { cn, truncateString } from "lib/utils";
 import type { UseChatHelpers } from "@ai-sdk/react";
-import { Alert, AlertDescription, AlertTitle } from "ui/alert";
 import {
   UserMessagePart,
   AssistMessagePart,
   ToolMessagePart,
   ReasoningPart,
+  FileMessagePart,
 } from "./message-parts";
-import { Think } from "ui/think";
-import { Terminal, ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronDown, ChevronUp, TriangleAlertIcon } from "lucide-react";
 import { Button } from "ui/button";
 import { useTranslations } from "next-intl";
+import { ChatMetadata } from "app-types/chat";
 
 interface Props {
   message: UIMessage;
+  prevMessage?: UIMessage;
   threadId?: string;
-  isLoading: boolean;
-  isLastMessage: boolean;
-  setMessages: UseChatHelpers["setMessages"];
-  reload: UseChatHelpers["reload"];
+  isLoading?: boolean;
+  isLastMessage?: boolean;
+  setMessages?: UseChatHelpers<UIMessage>["setMessages"];
+  sendMessage?: UseChatHelpers<UIMessage>["sendMessage"];
   className?: string;
-  onPoxyToolCall?: (answer: boolean) => void;
-  status: UseChatHelpers["status"];
-  messageIndex: number;
-  isError?: boolean;
+  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
+  messageIndex?: number;
+  status?: UseChatHelpers<UIMessage>["status"];
+  readonly?: boolean;
 }
 
 const PurePreviewMessage = ({
   message,
+  prevMessage,
+  readonly,
   threadId,
-  setMessages,
   isLoading,
   isLastMessage,
-  reload,
   status,
   className,
-  onPoxyToolCall,
+  setMessages,
+  addToolResult,
   messageIndex,
-  isError,
+  sendMessage,
 }: Props) => {
   const isUserMessage = useMemo(() => message.role === "user", [message.role]);
+  if (message.role == "system") {
+    return null; // system message is not shown
+  }
+  if (!message.parts.length) return null;
   return (
     <div className="w-full mx-auto max-w-3xl px-6 group/message">
       <div
         className={cn(
-          className,
           "flex gap-4 w-full group-data-[role=user]/message:ml-auto group-data-[role=user]/message:max-w-2xl",
+          className,
         )}
       >
         <div className="flex flex-col gap-4 w-full">
-          {message.experimental_attachments && (
-            <div
-              data-testid={"message-attachments"}
-              className="flex flex-row justify-end gap-2"
-            >
-              {message.experimental_attachments.map((attachment) => (
-                <Alert key={attachment.url}>
-                  <AlertTitle>Attachment</AlertTitle>
-                  <AlertDescription>
-                    attachment not yet implemented 😁
-                  </AlertDescription>
-                </Alert>
-              ))}
-            </div>
-          )}
-
           {message.parts?.map((part, index) => {
             const key = `message-${messageIndex}-part-${part.type}-${index}`;
             const isLastPart = index === message.parts.length - 1;
@@ -79,8 +69,9 @@ const PurePreviewMessage = ({
               return (
                 <ReasoningPart
                   key={key}
-                  reasoning={part.reasoning}
-                  isThinking={isLastPart}
+                  readonly={readonly}
+                  reasoningText={part.text}
+                  isThinking={isLastPart && isLastMessage && isLoading}
                 />
               );
             }
@@ -91,11 +82,11 @@ const PurePreviewMessage = ({
                   key={key}
                   status={status}
                   part={part}
+                  readonly={readonly}
                   isLast={isLastPart}
-                  isError={isError}
                   message={message}
                   setMessages={setMessages}
-                  reload={reload}
+                  sendMessage={sendMessage}
                 />
               );
             }
@@ -104,38 +95,61 @@ const PurePreviewMessage = ({
               return (
                 <AssistMessagePart
                   threadId={threadId}
+                  isLast={isLastMessage && isLastPart}
+                  isLoading={isLoading}
                   key={key}
+                  readonly={readonly}
                   part={part}
+                  prevMessage={prevMessage}
                   showActions={
                     isLastMessage ? isLastPart && !isLoading : isLastPart
                   }
                   message={message}
                   setMessages={setMessages}
-                  reload={reload}
-                  isError={isError}
+                  sendMessage={sendMessage}
                 />
               );
             }
 
-            if (part.type === "tool-invocation") {
+            if (isToolUIPart(part)) {
               const isLast = isLastMessage && isLastPart;
+              const isManualToolInvocation =
+                (message.metadata as ChatMetadata)?.toolChoice == "manual" &&
+                isLastMessage &&
+                isLastPart &&
+                part.state == "input-available" &&
+                isLoading &&
+                !readonly;
               return (
                 <ToolMessagePart
                   isLast={isLast}
-                  message={message}
+                  readonly={readonly}
+                  messageId={message.id}
+                  isManualToolInvocation={isManualToolInvocation}
                   showActions={
-                    isLastMessage ? isLastPart && !isLoading : isLastPart
+                    !readonly &&
+                    (isLastMessage ? isLastPart && !isLoading : isLastPart)
                   }
-                  onPoxyToolCall={isLast ? onPoxyToolCall : undefined}
+                  addToolResult={addToolResult}
                   key={key}
                   part={part}
-                  isError={isError}
                   setMessages={setMessages}
                 />
               );
+            } else if (part.type === "step-start") {
+              return null;
+            } else if (part.type === "file") {
+              return (
+                <FileMessagePart
+                  key={key}
+                  part={part}
+                  isUserMessage={isUserMessage}
+                />
+              );
+            } else {
+              return <div key={key}> unknown part {part.type}</div>;
             }
           })}
-          {isLoading && isLastMessage && <Think />}
         </div>
       </div>
     </div>
@@ -144,17 +158,27 @@ const PurePreviewMessage = ({
 
 export const PreviewMessage = memo(
   PurePreviewMessage,
-  (prevProps, nextProps) => {
+  function equalMessage(prevProps: Props, nextProps: Props) {
     if (prevProps.message.id !== nextProps.message.id) return false;
+
     if (prevProps.isLoading !== nextProps.isLoading) return false;
+
     if (prevProps.isLastMessage !== nextProps.isLastMessage) return false;
+
     if (prevProps.className !== nextProps.className) return false;
-    if (prevProps.status !== nextProps.status) return false;
-    if (prevProps.message.annotations !== nextProps.message.annotations)
+
+    if (nextProps.isLoading && nextProps.isLastMessage) return false;
+
+    if (!equal(prevProps.message.metadata, nextProps.message.metadata))
       return false;
-    if (prevProps.isError !== nextProps.isError) return false;
-    if (prevProps.onPoxyToolCall !== nextProps.onPoxyToolCall) return false;
-    if (!equal(prevProps.message.parts, nextProps.message.parts)) return false;
+
+    if (prevProps.message.parts.length !== nextProps.message.parts.length) {
+      return false;
+    }
+    if (!equal(prevProps.message.parts, nextProps.message.parts)) {
+      return false;
+    }
+
     return true;
   },
 );
@@ -170,42 +194,48 @@ export const ErrorMessage = ({
   const t = useTranslations();
   return (
     <div className="w-full mx-auto max-w-3xl px-6 animate-in fade-in mt-4">
-      <Alert variant="destructive" className="border-destructive">
-        <Terminal className="h-4 w-4" />
-        <AlertTitle className="mb-2">{t("Chat.Error")}</AlertTitle>
-        <AlertDescription className="text-sm">
-          <div className="whitespace-pre-wrap">
-            {isExpanded
-              ? error.message
-              : truncateString(error.message, maxLength)}
+      <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-4 px-2 opacity-70">
+          <div className="flex items-start gap-3">
+            <div className="p-1.5 bg-muted rounded-sm">
+              <TriangleAlertIcon className="h-3.5 w-3.5 text-destructive" />
+            </div>
+            <div className="flex-1">
+              <p className="font-medium text-sm mb-2">{t("Chat.Error")}</p>
+              <div className="text-sm text-muted-foreground">
+                <div className="whitespace-pre-wrap">
+                  {isExpanded
+                    ? error.message
+                    : truncateString(error.message, maxLength)}
+                </div>
+                {error.message.length > maxLength && (
+                  <Button
+                    onClick={() => setIsExpanded(!isExpanded)}
+                    variant={"ghost"}
+                    className="h-auto p-1 text-xs mt-2"
+                    size={"sm"}
+                  >
+                    {isExpanded ? (
+                      <>
+                        <ChevronUp className="h-3 w-3 mr-1" />
+                        {t("Common.showLess")}
+                      </>
+                    ) : (
+                      <>
+                        <ChevronDown className="h-3 w-3 mr-1" />
+                        {t("Common.showMore")}
+                      </>
+                    )}
+                  </Button>
+                )}
+                <p className="text-xs text-muted-foreground mt-3 italic">
+                  {t("Chat.thisMessageWasNotSavedPleaseTryTheChatAgain")}
+                </p>
+              </div>
+            </div>
           </div>
-          {error.message.length > maxLength && (
-            <Button
-              onClick={() => setIsExpanded(!isExpanded)}
-              variant={"ghost"}
-              className="ml-auto"
-              size={"sm"}
-            >
-              {isExpanded ? (
-                <>
-                  <ChevronUp className="h-3 w-3" />
-                  {t("Common.showLess")}
-                </>
-              ) : (
-                <>
-                  <ChevronDown className="h-3 w-3" />
-                  {t("Common.showMore")}
-                </>
-              )}
-            </Button>
-          )}
-        </AlertDescription>
-        <AlertDescription>
-          <p className="text-sm text-muted-foreground my-2">
-            {t("Chat.thisMessageWasNotSavedPleaseTryTheChatAgain")}
-          </p>
-        </AlertDescription>
-      </Alert>
+        </div>
+      </div>
     </div>
   );
 };

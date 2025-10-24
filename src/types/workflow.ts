@@ -1,83 +1,153 @@
-import { UIMessage } from "ai";
-import { ChatModel } from "app-types/chat";
+import { Tool } from "ai";
+import { ObjectJsonSchema7, Visibility } from "./util";
+import { NodeKind } from "lib/ai/workflow/workflow.interface";
+import { tag } from "lib/tag";
 
-export type NodeType =
-  | "start"
-  | "end"
-  | "condition"
-  | "llm"
-  | "tool"
-  | "code"
-  | "http"
-  | "information";
-
-export type NodeMetadata = {
-  position: {
-    x: number;
-    y: number;
-  };
-  [key: string]: any;
+export type WorkflowIcon = {
+  type: "emoji";
+  value: string;
+  style?: Record<string, string>;
 };
 
-export type Edge = {
+export type DBWorkflow = {
+  id: string;
+  icon?: WorkflowIcon;
+  readonly version: string;
+  name: string;
+  description?: string;
+  isPublished: boolean;
+  visibility: Visibility;
+  userId: string;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type DBNode = {
+  id: string;
+  workflowId: string;
+  kind: string;
+  name: string;
+  description?: string;
+  nodeConfig: Record<string, any>;
+  uiConfig: {
+    position?: {
+      x: number;
+      y: number;
+    };
+    [key: string]: any;
+  };
+  createdAt: Date;
+  updatedAt: Date;
+};
+export type DBEdge = {
   id: string;
   workflowId: string;
   source: string;
   target: string;
-  sourceHandle?: string | null;
-  targetHandle?: string | null;
-};
-
-export type BaseWorkflowNode<Type extends NodeType> = {
-  type: Type;
-  id: string;
-  workflowId: string;
-  name: string;
-  description: string;
-  metadata: NodeMetadata;
-  isMergeNode?: boolean;
-  usageFields: string[];
-  generateFields: Record<
-    string,
-    "text" | "number" | "boolean" | "date" | "object" | "array"
-  >;
-};
-
-export type StartNode = BaseWorkflowNode<"start"> & {
-  input: any;
-};
-
-export type EndNode = BaseWorkflowNode<"end"> & {
-  output: any;
-};
-
-export type LLMNode = BaseWorkflowNode<"llm"> & {
-  model: ChatModel;
-  messages: {
-    role: "user" | "assistant" | "system";
-    parts: Extract<UIMessage["parts"][number], { type: "text" }>[];
+  uiConfig: {
+    sourceHandle?: string;
+    targetHandle?: string;
+    [key: string]: any;
   };
-  outputSchema: "text" | "json";
+  createdAt: Date;
 };
 
-export type InformationNode = BaseWorkflowNode<"information"> & {
-  title: string;
-  description?: string;
-};
-
-export type WorkflowNode = StartNode | EndNode | LLMNode | InformationNode;
-
-export type WorkflowContext<State extends Record<string, any>> = {
-  state: State;
-  setState: (
-    state: Partial<State> | ((state: State) => Partial<State>),
-  ) => void;
-};
-
-export type WorkflowConfig = {
+export type WorkflowSummary = {
   id: string;
   name: string;
-  description: string;
-  nodes: WorkflowNode[];
-  edges: Edge[];
+  description?: string;
+  icon?: WorkflowIcon;
+  visibility: Visibility;
+  isPublished: boolean;
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+  updatedAt: Date;
 };
+export interface WorkflowRepository {
+  delete(id: string): Promise<void>;
+  selectByUserId(userId: string): Promise<DBWorkflow[]>;
+  selectAll(userId: string): Promise<WorkflowSummary[]>;
+  selectExecuteAbility(userId: string): Promise<WorkflowSummary[]>;
+  selectToolByIds(ids: string[]): Promise<
+    {
+      id: string;
+      name: string;
+      description?: string;
+      schema: ObjectJsonSchema7;
+    }[]
+  >;
+  checkAccess(
+    workflowId: string,
+    userId: string,
+    readOnly?: boolean,
+  ): Promise<boolean>;
+  selectById(id: string): Promise<DBWorkflow | null>;
+  save(
+    workflow: PartialBy<
+      DBWorkflow,
+      | "id"
+      | "createdAt"
+      | "updatedAt"
+      | "visibility"
+      | "isPublished"
+      | "version"
+    >,
+    noGenerateInputNode?: boolean,
+  ): Promise<DBWorkflow>;
+  saveStructure(data: {
+    workflowId: string;
+    nodes?: DBNode[];
+    edges?: DBEdge[];
+    deleteNodes?: string[]; // node id
+    deleteEdges?: string[]; // edge id
+  }): Promise<void>;
+
+  selectStructureById(
+    id: string,
+    option?: {
+      ignoreNote?: boolean;
+    },
+  ): Promise<
+    | null
+    | (DBWorkflow & {
+        nodes: DBNode[];
+        edges: DBEdge[];
+      })
+  >;
+}
+
+export type VercelAIWorkflowTool = Tool & {
+  _workflowId: string;
+  _toolName: string;
+  _originToolName: string;
+};
+
+export const VercelAIWorkflowToolTag = tag<VercelAIWorkflowTool>("workflow");
+
+export type VercelAIWorkflowToolStreaming = {
+  name: string;
+  startedAt: number;
+  kind: NodeKind;
+  endedAt?: number;
+  id: string;
+  status: "running" | "success" | "fail";
+  error?: { name: string; message: string };
+  result?: { input?: any; output?: any };
+};
+
+export type VercelAIWorkflowToolStreamingResult = {
+  toolCallId: string;
+  workflowName: string;
+  workflowIcon?: WorkflowIcon;
+
+  startedAt: number;
+  endedAt: number;
+  history: VercelAIWorkflowToolStreaming[];
+  error?: { name: string; message: string };
+  result?: any;
+  status: "running" | "success" | "fail";
+};
+
+export const VercelAIWorkflowToolStreamingResultTag =
+  tag<VercelAIWorkflowToolStreamingResult>("workflow-streaming-result");

@@ -1,21 +1,30 @@
 import { NextRequest } from "next/server";
 import { getSession } from "auth/server";
-import { AllowedMCPServer, VercelAIMcpTool } from "app-types/mcp";
-import { chatRepository } from "lib/db/repository";
+import { VercelAIMcpTool } from "app-types/mcp";
 import {
   filterMcpServerCustomizations,
-  filterToolsByAllowedMCPServers,
+  loadMcpTools,
   mergeSystemPrompt,
-} from "../helper";
+} from "../shared.chat";
 import {
   buildMcpServerCustomizationsSystemPrompt,
-  buildProjectInstructionsSystemPrompt,
   buildSpeechSystemPrompt,
 } from "lib/ai/prompts";
-import { mcpClientsManager } from "lib/ai/mcp/mcp-manager";
-import { errorIf, safe } from "ts-safe";
+
+import { safe } from "ts-safe";
 import { DEFAULT_VOICE_TOOLS } from "lib/ai/speech";
-import { rememberMcpServerCustomizationsAction } from "../actions";
+import {
+  rememberAgentAction,
+  rememberMcpServerCustomizationsAction,
+} from "../actions";
+import globalLogger from "lib/logger";
+import { colorize } from "consola/utils";
+import { getUserPreferences } from "lib/user/server";
+import { ChatMention } from "app-types/chat";
+
+const logger = globalLogger.withDefaults({
+  message: colorize("blackBright", `OpenAI Realtime API: `),
+});
 
 export async function POST(request: NextRequest) {
   try {
@@ -34,53 +43,56 @@ export async function POST(request: NextRequest) {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    const { voice, allowedMcpServers, toolChoice, threadId, projectId } =
-      (await request.json()) as {
-        model: string;
-        voice: string;
-        allowedMcpServers: Record<string, AllowedMCPServer>;
-        toolChoice: "auto" | "none" | "manual";
-        projectId?: string;
-        threadId?: string;
-      };
+    const { voice, mentions, agentId } = (await request.json()) as {
+      model: string;
+      voice: string;
+      agentId?: string;
+      mentions: ChatMention[];
+    };
 
-    const mcpTools = mcpClientsManager.tools();
+    const agent = await rememberAgentAction(agentId, session.user.id);
 
-    const tools = safe(mcpTools)
-      .map(errorIf(() => toolChoice === "none" && "Not allowed"))
-      .map((tools) => {
-        return filterToolsByAllowedMCPServers(tools, allowedMcpServers);
-      })
-      .orElse(undefined);
+    agentId && logger.info(`[${agentId}] Agent: ${agent?.name}`);
 
-    const { instructions, userPreferences } = projectId
-      ? await chatRepository.selectThreadInstructionsByProjectId(
-          session.user.id,
-          projectId,
-        )
-      : await chatRepository.selectThreadInstructions(
-          session.user.id,
-          threadId,
-        );
+    const enabledMentions = agent ? agent.instructions.mentions : mentions;
+
+    const allowedMcpTools = await loadMcpTools({ mentions: enabledMentions });
+
+    const toolNames = Object.keys(allowedMcpTools ?? {});
+
+    if (toolNames.length > 0) {
+      logger.info(`${toolNames.length} tools found`);
+    } else {
+      logger.info(`No tools found`);
+    }
+
+    const userPreferences = await getUserPreferences(session.user.id);
 
     const mcpServerCustomizations = await safe()
       .map(() => {
-        if (Object.keys(tools ?? {}).length === 0)
+        if (Object.keys(allowedMcpTools ?? {}).length === 0)
           throw new Error("No tools found");
         return rememberMcpServerCustomizationsAction(session.user.id);
       })
-      .map((v) => filterMcpServerCustomizations(tools!, v))
+      .map((v) => filterMcpServerCustomizations(allowedMcpTools!, v))
       .orElse({});
 
-    const openAITools = Object.entries(tools ?? {}).map(([name, tool]) => {
-      return vercelAIToolToOpenAITool(tool, name);
-    });
+    const openAITools = Object.entries(allowedMcpTools ?? {}).map(
+      ([name, tool]) => {
+        return vercelAIToolToOpenAITool(tool, name);
+      },
+    );
 
     const systemPrompt = mergeSystemPrompt(
-      buildSpeechSystemPrompt(session.user, userPreferences),
-      buildProjectInstructionsSystemPrompt(instructions),
+      buildSpeechSystemPrompt(
+        session.user,
+        userPreferences ?? undefined,
+        agent,
+      ),
       buildMcpServerCustomizationsSystemPrompt(mcpServerCustomizations),
     );
+
+    const bindingTools = [...openAITools, ...DEFAULT_VOICE_TOOLS];
 
     const r = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
@@ -96,7 +108,7 @@ export async function POST(request: NextRequest) {
           model: "whisper-1",
         },
         instructions: systemPrompt,
-        tools: [...openAITools, ...DEFAULT_VOICE_TOOLS],
+        tools: bindingTools,
       }),
     });
 
@@ -119,7 +131,7 @@ function vercelAIToolToOpenAITool(tool: VercelAIMcpTool, name: string) {
     name,
     type: "function",
     description: tool.description,
-    parameters: tool.parameters?.jsonSchema ?? {
+    parameters: (tool.inputSchema as any).jsonSchema ?? {
       type: "object",
       properties: {},
       required: [],

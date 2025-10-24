@@ -12,6 +12,10 @@
 
 # testing
 /coverage
+/tests/.auth
+test-results/
+playwright-report/
+.env.test
 
 # next.js
 /.next/
@@ -54,3 +58,5 @@ local-data
 *.ignore
 .mcp-config.json
 openai-compatible.config.ts
+certificates
+public/uploads

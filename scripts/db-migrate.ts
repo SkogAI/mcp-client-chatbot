@@ -1,11 +1,12 @@
 import { colorize } from "consola/utils";
 import "load-env";
 
-const promise = import("lib/db/pg/migrate.pg");
+const { runMigrate } = await import("lib/db/pg/migrate.pg");
 
-await promise
+await runMigrate()
   .then(() => {
     console.info("🚀 DB Migration completed");
+    process.exit(0);
   })
   .catch((err) => {
     console.error(err);

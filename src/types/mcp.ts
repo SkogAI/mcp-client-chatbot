@@ -1,4 +1,9 @@
+import {
+  OAuthClientInformationFull,
+  OAuthTokens,
+} from "@modelcontextprotocol/sdk/shared/auth.js";
 import { Tool } from "ai";
+import { tag } from "lib/tag";
 import { z } from "zod";
 
 export const MCPRemoteConfigZodSchema = z.object({
@@ -35,22 +40,41 @@ export type MCPToolInfo = {
 };
 
 export type MCPServerInfo = {
+  id: string;
   name: string;
   config: MCPServerConfig;
+  visibility: "public" | "private";
   error?: unknown;
-  status: "connected" | "disconnected" | "loading";
+  enabled: boolean;
+  userId: string;
+  status: "connected" | "disconnected" | "loading" | "authorizing";
   toolInfo: MCPToolInfo[];
+  createdAt?: Date | string;
+  updatedAt?: Date | string;
+  userName?: string | null;
+  userAvatar?: string | null;
+  description?: string; // For ShareableCard compatibility
+  icon?: {
+    value?: string;
+    style?: {
+      backgroundColor?: string;
+    };
+  };
 };
 
 export type McpServerInsert = {
   name: string;
   config: MCPServerConfig;
   id?: string;
+  userId: string;
+  visibility?: "public" | "private";
 };
 export type McpServerSelect = {
   name: string;
   config: MCPServerConfig;
   id: string;
+  userId: string;
+  visibility: "public" | "private";
 };
 
 export type VercelAIMcpTool = Tool & {
@@ -59,13 +83,17 @@ export type VercelAIMcpTool = Tool & {
   _originToolName: string;
 };
 
+export const VercelAIMcpToolTag = tag<VercelAIMcpTool>("mcp");
+
 export interface MCPRepository {
   save(server: McpServerInsert): Promise<McpServerSelect>;
   selectById(id: string): Promise<McpServerSelect | null>;
   selectByServerName(name: string): Promise<McpServerSelect | null>;
   selectAll(): Promise<McpServerSelect[]>;
+  selectAllForUser(userId: string): Promise<McpServerSelect[]>;
   deleteById(id: string): Promise<void>;
   existsByServerName(name: string): Promise<boolean>;
+  updateVisibility(id: string, visibility: "public" | "private"): Promise<void>;
 }
 
 export const McpToolCustomizationZodSchema = z.object({
@@ -141,4 +169,119 @@ export type McpServerCustomizationsPrompt = {
   tools?: {
     [toolName: string]: string;
   };
+};
+
+const TextContent = z.object({
+  type: z.literal("text"),
+  text: z.string(),
+  _meta: z.object({}).passthrough().optional(),
+});
+
+const ImageContent = z.object({
+  type: z.literal("image"),
+  data: z.string(),
+  mimeType: z.string(),
+  _meta: z.object({}).passthrough().optional(),
+});
+
+const AudioContent = z.object({
+  type: z.literal("audio"),
+  data: z.string(),
+  mimeType: z.string(),
+  _meta: z.object({}).passthrough().optional(),
+});
+
+const ResourceLinkContent = z.object({
+  type: z.literal("resource_link"),
+  name: z.string(),
+  title: z.string().optional(),
+  uri: z.string(),
+  description: z.string().optional(),
+  mimeType: z.string().optional(),
+  _meta: z.object({}).passthrough().optional(),
+});
+
+const ResourceText = z.object({
+  uri: z.string(),
+  mimeType: z.string().optional(),
+  _meta: z.object({}).passthrough().optional(),
+  text: z.string(),
+});
+
+const ResourceBlob = z.object({
+  uri: z.string(),
+  mimeType: z.string().optional(),
+  _meta: z.object({}).passthrough().optional(),
+  blob: z.string(),
+});
+
+const ResourceContent = z.object({
+  type: z.literal("resource"),
+  resource: z.union([ResourceText, ResourceBlob]),
+  _meta: z.object({}).passthrough().optional(),
+});
+
+const ContentUnion = z.union([
+  TextContent,
+  ImageContent,
+  AudioContent,
+  ResourceLinkContent,
+  ResourceContent,
+]);
+
+export const CallToolResultSchema = z.object({
+  _meta: z.object({}).passthrough().optional(),
+  content: z.array(ContentUnion).default([]),
+  structuredContent: z.object({}).passthrough().optional(),
+  isError: z.boolean().optional(),
+});
+
+export type CallToolResult = z.infer<typeof CallToolResultSchema>;
+
+export type McpOAuthSession = {
+  id: string;
+  mcpServerId: string;
+  serverUrl: string;
+  clientInfo?: OAuthClientInformationFull;
+  tokens?: OAuthTokens;
+  codeVerifier?: string;
+  state?: string;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type McpOAuthRepository = {
+  // 1. Query methods
+
+  // Get session with valid tokens (authenticated)
+  getAuthenticatedSession(
+    mcpServerId: string,
+  ): Promise<McpOAuthSession | undefined>;
+
+  // Get session by OAuth state (for callback handling)
+  getSessionByState(state: string): Promise<McpOAuthSession | undefined>;
+
+  // 2. Create/Update methods
+
+  // Create new OAuth session
+  createSession(
+    mcpServerId: string,
+    data: Partial<McpOAuthSession>,
+  ): Promise<McpOAuthSession>;
+
+  // Update existing session by state
+  updateSessionByState(
+    state: string,
+    data: Partial<McpOAuthSession>,
+  ): Promise<McpOAuthSession>;
+
+  // Save tokens and cleanup incomplete sessions
+  saveTokensAndCleanup(
+    state: string,
+    mcpServerId: string,
+    data: Partial<McpOAuthSession>,
+  ): Promise<McpOAuthSession>;
+
+  // Delete a session by its OAuth state
+  deleteByState(state: string): Promise<void>;
 };

@@ -1,17 +1,27 @@
-import Link from "next/link";
+"use client";
+
 import React, { memo, PropsWithChildren } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PreBlock } from "./pre-block";
 import { isJson, isString, toAny } from "lib/utils";
 import JsonView from "ui/json-view";
+import { LinkIcon } from "lucide-react";
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from "ui/table";
 
 const FadeIn = memo(({ children }: PropsWithChildren) => {
   return <span className="fade-in animate-in duration-1000">{children} </span>;
 });
 FadeIn.displayName = "FadeIn";
 
-const WordByWordFadeIn = memo(({ children }: PropsWithChildren) => {
+export const WordByWordFadeIn = memo(({ children }: PropsWithChildren) => {
   const childrens = [children]
     .flat()
     .flatMap((child) => (isString(child) ? child.split(" ") : child));
@@ -21,9 +31,39 @@ const WordByWordFadeIn = memo(({ children }: PropsWithChildren) => {
 });
 WordByWordFadeIn.displayName = "WordByWordFadeIn";
 const components: Partial<Components> = {
+  table: ({ node, children, ...props }) => {
+    return (
+      <div className="my-4">
+        <Table {...props}>{children}</Table>
+      </div>
+    );
+  },
+  thead: ({ node, children, ...props }) => {
+    return <TableHeader {...props}>{children}</TableHeader>;
+  },
+  tbody: ({ node, children, ...props }) => {
+    return <TableBody {...props}>{children}</TableBody>;
+  },
+  tr: ({ node, children, ...props }) => {
+    return <TableRow {...props}>{children}</TableRow>;
+  },
+  th: ({ node, children, ...props }) => {
+    return (
+      <TableHead {...props}>
+        <WordByWordFadeIn>{children}</WordByWordFadeIn>
+      </TableHead>
+    );
+  },
+  td: ({ node, children, ...props }) => {
+    return (
+      <TableCell {...props}>
+        <WordByWordFadeIn>{children}</WordByWordFadeIn>
+      </TableCell>
+    );
+  },
   code: ({ children }) => {
     return (
-      <code className="text-sm rounded-md bg-accent py-1 px-2 mx-0.5">
+      <code className="text-sm rounded-md bg-accent text-primary py-1 px-2 mx-0.5">
         {children}
       </code>
     );
@@ -67,7 +107,7 @@ const components: Partial<Components> = {
   },
   ul: ({ node, children, ...props }) => {
     return (
-      <ul className="px-8 list-decimal list-outside" {...props}>
+      <ul className="px-8 list-outside list-disc" {...props}>
         {children}
       </ul>
     );
@@ -81,16 +121,15 @@ const components: Partial<Components> = {
   },
   a: ({ node, children, ...props }) => {
     return (
-      <Link
-        className="hover:underline text-blue-400"
+      <a
+        className="text-primary hover:underline flex gap-1.5 items-center"
         target="_blank"
         rel="noreferrer"
         {...toAny(props)}
       >
-        <b>
-          <WordByWordFadeIn>{children}</WordByWordFadeIn>
-        </b>
-      </Link>
+        <LinkIcon className="size-3.5" />
+        <WordByWordFadeIn>{children}</WordByWordFadeIn>
+      </a>
     );
   },
   h1: ({ node, children, ...props }) => {
@@ -138,8 +177,10 @@ const components: Partial<Components> = {
   img: ({ node, children, ...props }) => {
     const { src, alt, ...rest } = props;
 
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img className="mx-auto rounded-lg" src={src} alt={alt} {...rest} />;
+    return src ? (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img className="mx-auto rounded-lg" src={src} alt={alt} {...rest} />
+    ) : null;
   },
 };
 

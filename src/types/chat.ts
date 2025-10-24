@@ -1,7 +1,16 @@
-import type { UIMessage, Message } from "ai";
+import type { LanguageModelUsage, UIMessage } from "ai";
 import { z } from "zod";
 import { AllowedMCPServerZodSchema } from "./mcp";
 import { UserPreferences } from "./user";
+import { tag } from "lib/tag";
+
+export type ChatMetadata = {
+  usage?: LanguageModelUsage;
+  chatModel?: ChatModel;
+  toolChoice?: "auto" | "none" | "manual";
+  toolCount?: number;
+  agentId?: string;
+};
 
 export type ChatModel = {
   provider: string;
@@ -13,18 +22,6 @@ export type ChatThread = {
   title: string;
   userId: string;
   createdAt: Date;
-  projectId: string | null;
-};
-
-export type Project = {
-  id: string;
-  name: string;
-  userId: string;
-  instructions: {
-    systemPrompt: string;
-  };
-  createdAt: Date;
-  updatedAt: Date;
 };
 
 export type ChatMessage = {
@@ -32,43 +29,63 @@ export type ChatMessage = {
   threadId: string;
   role: UIMessage["role"];
   parts: UIMessage["parts"];
-  annotations?: ChatMessageAnnotation[];
-  attachments?: unknown[];
-  model: string | null;
+  metadata?: ChatMetadata;
   createdAt: Date;
 };
 
-export type ChatMention =
-  | {
-      type: "tool";
-      name: string;
-      serverName?: string;
-      serverId: string;
-    }
-  | {
-      type: "mcpServer";
-      name: string;
-      serverId: string;
-    }
-  | {
-      type: "unknown";
-      name: string;
-    };
+export const ChatMentionSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("mcpTool"),
+    name: z.string(),
+    description: z.string().optional(),
+    serverName: z.string().optional(),
+    serverId: z.string(),
+  }),
+  z.object({
+    type: z.literal("defaultTool"),
+    name: z.string(),
+    label: z.string(),
+    description: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("mcpServer"),
+    name: z.string(),
+    description: z.string().optional(),
+    toolCount: z.number().optional(),
+    serverId: z.string(),
+  }),
+  z.object({
+    type: z.literal("workflow"),
+    name: z.string(),
+    description: z.string().nullish(),
+    workflowId: z.string(),
+    icon: z
+      .object({
+        type: z.literal("emoji"),
+        value: z.string(),
+        style: z.record(z.string(), z.string()).optional(),
+      })
+      .nullish(),
+  }),
+  z.object({
+    type: z.literal("agent"),
+    name: z.string(),
+    description: z.string().nullish(),
+    agentId: z.string(),
+    icon: z
+      .object({
+        type: z.literal("emoji"),
+        value: z.string(),
+        style: z.record(z.string(), z.string()).optional(),
+      })
+      .nullish(),
+  }),
+]);
 
-export type ChatMessageAnnotation = {
-  mentions?: ChatMention[];
-  usageTokens?: number;
-  toolChoice?: "auto" | "none" | "manual";
-  [key: string]: any;
-};
-
-export enum AppDefaultToolkit {
-  Visualization = "visualization",
-}
+export type ChatMention = z.infer<typeof ChatMentionSchema>;
 
 export const chatApiSchemaRequestBodySchema = z.object({
   id: z.string(),
-  projectId: z.string().optional(),
   message: z.any() as z.ZodType<UIMessage>,
   chatModel: z
     .object({
@@ -77,17 +94,14 @@ export const chatApiSchemaRequestBodySchema = z.object({
     })
     .optional(),
   toolChoice: z.enum(["auto", "none", "manual"]),
+  mentions: z.array(ChatMentionSchema).optional(),
+  imageTool: z.object({ model: z.string().optional() }).optional(),
   allowedMcpServers: z.record(z.string(), AllowedMCPServerZodSchema).optional(),
   allowedAppDefaultToolkit: z.array(z.string()).optional(),
 });
 
 export type ChatApiSchemaRequestBody = z.infer<
   typeof chatApiSchemaRequestBodySchema
->;
-
-export type ToolInvocationUIPart = Extract<
-  Exclude<Message["parts"], undefined>[number],
-  { type: "tool-invocation" }
 >;
 
 export type ChatRepository = {
@@ -99,29 +113,11 @@ export type ChatRepository = {
 
   selectThreadDetails(id: string): Promise<
     | (ChatThread & {
-        instructions: Project["instructions"] | null;
         messages: ChatMessage[];
         userPreferences?: UserPreferences;
       })
     | null
   >;
-
-  selectThreadInstructions(
-    userId: string,
-    threadId?: string,
-  ): Promise<{
-    instructions: Project["instructions"] | null;
-    userPreferences?: UserPreferences;
-    threadId?: string;
-    projectId?: string;
-  }>;
-  selectThreadInstructionsByProjectId(
-    userId: string,
-    projectId?: string,
-  ): Promise<{
-    instructions: Project["instructions"] | null;
-    userPreferences?: UserPreferences;
-  }>;
 
   selectMessagesByThreadId(threadId: string): Promise<ChatMessage[]>;
 
@@ -138,37 +134,26 @@ export type ChatRepository = {
 
   deleteThread(id: string): Promise<void>;
 
+  upsertThread(
+    thread: PartialBy<Omit<ChatThread, "createdAt">, "userId">,
+  ): Promise<ChatThread>;
+
   insertMessage(message: Omit<ChatMessage, "createdAt">): Promise<ChatMessage>;
   upsertMessage(message: Omit<ChatMessage, "createdAt">): Promise<ChatMessage>;
 
   deleteMessagesByChatIdAfterTimestamp(messageId: string): Promise<void>;
 
-  deleteNonProjectThreads(userId: string): Promise<void>;
   deleteAllThreads(userId: string): Promise<void>;
 
-  insertProject(
-    project: Omit<Project, "id" | "createdAt" | "updatedAt">,
-  ): Promise<Project>;
+  deleteUnarchivedThreads(userId: string): Promise<void>;
 
-  selectProjectById(id: string): Promise<
-    | (Project & {
-        threads: ChatThread[];
-      })
-    | null
-  >;
-
-  selectProjectsByUserId(
-    userId: string,
-  ): Promise<Omit<Project, "instructions">[]>;
-
-  updateProject(
-    id: string,
-    project: Partial<Pick<Project, "name" | "instructions">>,
-  ): Promise<Project>;
-
-  deleteProject(id: string): Promise<void>;
+  checkAccess(id: string, userId: string): Promise<boolean>;
 
   insertMessages(
     messages: PartialBy<ChatMessage, "createdAt">[],
   ): Promise<ChatMessage[]>;
 };
+
+export const ManualToolConfirmTag = tag<{
+  confirm: boolean;
+}>("manual-tool-confirm");

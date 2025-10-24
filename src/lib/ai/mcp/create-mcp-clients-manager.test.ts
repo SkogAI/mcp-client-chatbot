@@ -22,24 +22,25 @@ vi.mock("lib/utils", () => ({
     wait: vi.fn(),
     isLocked: false,
   })),
+  generateUUID: vi.fn(() => "mock-uuid-12345678"),
 }));
 
 vi.mock("ts-safe", () => ({
   safe: vi.fn((fn) => ({
-    ifOk: vi.fn((nextFn) => ({
-      ifOk: vi.fn((anotherFn) => ({
-        watch: vi.fn((watchFn) => ({
-          unwrap: vi.fn(() => {
-            fn();
-            nextFn();
-            if (typeof anotherFn === "function") {
-              return anotherFn();
-            }
-            watchFn();
-          }),
-        })),
+    // ifOk: vi.fn((nextFn) => ({
+    ifOk: vi.fn((anotherFn) => ({
+      watch: vi.fn((watchFn) => ({
+        unwrap: vi.fn(() => {
+          fn();
+          // nextFn();
+          if (typeof anotherFn === "function") {
+            return anotherFn();
+          }
+          watchFn();
+        }),
       })),
     })),
+    // })),
   })),
 }));
 
@@ -62,6 +63,8 @@ describe("MCPClientsManager", () => {
     name: "test-server",
     config: mockServerConfig,
     enabled: true,
+    userId: "test-user-id",
+    visibility: "private" as const,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -148,6 +151,7 @@ describe("MCPClientsManager", () => {
       expect(mockStorage.loadAll).toHaveBeenCalled();
       expect(mockCreateMCPClient).toHaveBeenCalledWith(
         "test-server",
+        "test-server",
         mockServerConfig,
         { autoDisconnectSeconds: 1800 },
       );
@@ -171,6 +175,7 @@ describe("MCPClientsManager", () => {
       await manager.addClient("new-server", "new-server", mockServerConfig);
 
       expect(mockCreateMCPClient).toHaveBeenCalledWith(
+        "new-server",
         "new-server",
         mockServerConfig,
         { autoDisconnectSeconds: 1800 },
@@ -204,17 +209,20 @@ describe("MCPClientsManager", () => {
       const serverToSave = {
         name: "new-server",
         config: mockServerConfig,
+        userId: "test-user-id",
       };
 
       vi.mocked(mockStorage.save).mockResolvedValue({
         ...serverToSave,
         id: "new-server-id",
+        visibility: "private" as const,
       });
 
       await manager.persistClient(serverToSave);
 
       expect(mockStorage.save).toHaveBeenCalledWith(serverToSave);
       expect(mockCreateMCPClient).toHaveBeenCalledWith(
+        "new-server-id",
         "new-server",
         mockServerConfig,
         { autoDisconnectSeconds: 1800 },
@@ -228,11 +236,13 @@ describe("MCPClientsManager", () => {
       const serverToSave = {
         name: "new-server",
         config: mockServerConfig,
+        userId: "test-user-id",
       };
 
       await manager.persistClient(serverToSave);
 
       expect(mockCreateMCPClient).toHaveBeenCalledWith(
+        "memory-1",
         "new-server",
         mockServerConfig,
         { autoDisconnectSeconds: 1800 },
@@ -288,6 +298,8 @@ describe("MCPClientsManager", () => {
       const updatedServer = {
         ...mockServer,
         config: updatedConfig,
+        userId: "test-user-id",
+        visibility: "private" as const,
       };
 
       vi.mocked(mockStorage.get).mockResolvedValue(updatedServer);
@@ -300,24 +312,8 @@ describe("MCPClientsManager", () => {
       expect(mockStorage.get).toHaveBeenCalledWith("test-server");
       expect(mockCreateMCPClient).toHaveBeenCalledWith(
         "test-server",
-        updatedConfig,
-        { autoDisconnectSeconds: 1800 },
-      );
-    });
-
-    it("should refresh client without storage", async () => {
-      manager = new MCPClientsManager();
-      await manager.init();
-      await manager.addClient("test-server", "test-server", mockServerConfig);
-
-      const newClient = { ...mockClient };
-      vi.mocked(mockCreateMCPClient).mockReturnValue(newClient);
-
-      await manager.refreshClient("test-server");
-
-      expect(mockCreateMCPClient).toHaveBeenCalledWith(
         "test-server",
-        mockServerConfig,
+        updatedConfig,
         { autoDisconnectSeconds: 1800 },
       );
     });
@@ -366,36 +362,14 @@ describe("MCPClientsManager", () => {
     });
   });
 
-  describe("getClient", () => {
-    beforeEach(async () => {
-      manager = new MCPClientsManager(mockStorage);
-      await manager.init();
-      await manager.addClient("test-server", "test-server", mockServerConfig);
-    });
-
-    it("should return client when it exists", async () => {
-      const client = await manager.getClient("test-server");
-
-      expect(client).toEqual({
-        client: mockClient,
-        name: "test-server",
-      });
-    });
-
-    it("should return undefined when client does not exist", async () => {
-      const client = await manager.getClient("non-existent");
-      expect(client).toBeUndefined();
-    });
-  });
-
   describe("tools", () => {
     beforeEach(async () => {
       manager = new MCPClientsManager(mockStorage);
       await manager.init();
     });
 
-    it("should return empty object when no clients", () => {
-      const tools = manager.tools();
+    it("should return empty object when no clients", async () => {
+      const tools = await manager.tools();
       expect(tools).toEqual({});
     });
 
@@ -414,7 +388,7 @@ describe("MCPClientsManager", () => {
       vi.mocked(mockCreateMCPClient).mockReturnValue(clientWithoutTools);
       await manager.addClient("empty-server", "empty-server", mockServerConfig);
 
-      const tools = manager.tools();
+      const tools = await manager.tools();
       expect(tools).toEqual({});
     });
   });

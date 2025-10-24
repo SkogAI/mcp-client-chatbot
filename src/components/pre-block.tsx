@@ -6,14 +6,14 @@ import {
   codeToHast,
   type BundledLanguage,
 } from "shiki/bundle/web";
-import { Fragment, useLayoutEffect, useMemo, useState } from "react";
+import { Fragment, useLayoutEffect, useState } from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
 import { toJsxRuntime } from "hast-util-to-jsx-runtime";
 import { safe } from "ts-safe";
 import { cn } from "lib/utils";
 import { useTheme } from "next-themes";
 import { Button } from "ui/button";
-import { Clipboard, CheckIcon } from "lucide-react";
+import { CheckIcon, CopyIcon } from "lucide-react";
 import JsonView from "ui/json-view";
 import { useCopy } from "@/hooks/use-copy";
 import dynamic from "next/dynamic";
@@ -54,26 +54,29 @@ const PurePre = ({
   const { copied, copy } = useCopy();
 
   return (
-    <pre className={cn("relative ", className)}>
-      <div className="w-full flex z-20 py-2 px-4 items-center">
-        <span className="text-sm text-muted-foreground">{lang}</span>
-        <Button
-          size="icon"
-          variant={copied ? "secondary" : "ghost"}
-          className="ml-auto z-10 p-3! size-2! rounded-sm"
-          onClick={() => {
-            copy(code);
-          }}
-        >
-          {copied ? <CheckIcon /> : <Clipboard className="size-3!" />}
-        </Button>
+    <pre className={cn("relative", className)}>
+      <div className="p-1.5 border-b mb-4 z-20 bg-secondary">
+        <div className="w-full flex z-20 py-0.5 px-4 items-center">
+          <span className="text-sm text-muted-foreground">{lang}</span>
+          <Button
+            size="icon"
+            variant={copied ? "secondary" : "ghost"}
+            className="ml-auto z-10 p-3! size-2! rounded-sm"
+            onClick={() => {
+              copy(code);
+            }}
+          >
+            {copied ? <CheckIcon /> : <CopyIcon className="size-3!" />}
+          </Button>
+        </div>
       </div>
+
       <div className="relative overflow-x-auto px-6 pb-6">{children}</div>
     </pre>
   );
 };
 
-export async function highlight(
+export async function Highlight(
   code: string,
   lang: BundledLanguage | (string & {}),
   theme: string,
@@ -123,29 +126,26 @@ export function PreBlock({ children }: { children: any }) {
       {children}
     </PurePre>,
   );
-  const themeSystem = useMemo(() => {
-    return theme?.endsWith("-dark") ? "dark" : "default";
-  }, [theme]);
 
   useLayoutEffect(() => {
     safe()
       .map(() =>
-        highlight(
+        Highlight(
           code,
           language,
-          themeSystem === "dark" ? "dark-plus" : "github-light",
+          theme == "dark" ? "dark-plus" : "github-light",
         ),
       )
       .ifOk(setComponent)
       .watch(() => setLoading(false));
-  }, [themeSystem, language, code]);
+  }, [theme, language, code]);
 
   // For other code blocks, render as before
   return (
     <div
       className={cn(
         loading && "animate-pulse",
-        "text-sm flex bg-accent/30 flex-col rounded-2xl relative my-4 overflow-hidden border",
+        "text-sm flex bg-secondary/40 shadow border flex-col rounded relative my-4 overflow-hidden",
       )}
     >
       {component}

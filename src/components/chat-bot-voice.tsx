@@ -1,13 +1,13 @@
 "use client";
 
-import { TextPart, UIMessage } from "ai";
+import { getToolName, isToolUIPart, TextPart } from "ai";
 import { DEFAULT_VOICE_TOOLS, UIMessageWithCompleted } from "lib/ai/speech";
 
 import {
   OPENAI_VOICE,
   useOpenAIVoiceChat as OpenAIVoiceChat,
 } from "lib/ai/speech/open-ai/use-voice-chat.openai";
-import { cn, nextTick } from "lib/utils";
+import { cn, groupBy, isNull } from "lib/utils";
 import {
   CheckIcon,
   Loader,
@@ -46,50 +46,20 @@ import { OpenAIIcon } from "ui/openai-icon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { ToolMessagePart } from "./message-parts";
 
-import { EnabledMcpToolsDropdown } from "./enabled-mcp-tools-dropdown";
-import { ToolInvocationUIPart } from "app-types/chat";
+import { EnabledTools, EnabledToolsDropdown } from "./enabled-tools-dropdown";
 import { appStore } from "@/app/store";
 import { useShallow } from "zustand/shallow";
-import { mutate } from "swr";
 import { useTranslations } from "next-intl";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "ui/dialog";
 import JsonView from "ui/json-view";
-import { useRouter } from "next/navigation";
 import { isShortcutEvent, Shortcuts } from "lib/keyboard-shortcuts";
+import { useAgent } from "@/hooks/queries/use-agent";
+import { ChatMention } from "app-types/chat";
+import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 
-const isNotEmptyUIMessage = (message: UIMessage) => {
-  return message.parts.some((v) => {
-    if (v.type === "text") {
-      return v.text.trim() !== "";
-    }
-    return true;
-  });
-};
-
-function mergeConsecutiveMessages(messages: UIMessage[]): UIMessage[] {
-  if (messages.length === 0) return [];
-
-  const merged: UIMessage[] = [];
-  let current = { ...messages[0], parts: [...messages[0].parts] };
-
-  for (let i = 1; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg.role === current.role) {
-      current.parts = [...current.parts, ...msg.parts];
-    } else {
-      merged.push(current);
-      current = { ...msg, parts: [...msg.parts] };
-    }
-  }
-  merged.push(current);
-
-  return merged;
-}
-
-const prependTools = [
+const prependTools: EnabledTools[] = [
   {
-    id: "Browser",
-    name: "Browser",
+    groupName: "Browser",
     tools: DEFAULT_VOICE_TOOLS.map((tool) => ({
       name: tool.name,
       description: tool.description,
@@ -99,23 +69,58 @@ const prependTools = [
 
 export function ChatBotVoice() {
   const t = useTranslations("Chat");
-  const [appStoreMutate, voiceChat, model] = appStore(
-    useShallow((state) => [state.mutate, state.voiceChat, state.chatModel]),
+  const [
+    agentId,
+    appStoreMutate,
+    voiceChat,
+    model,
+    allowedMcpServers,
+    mcpList,
+  ] = appStore(
+    useShallow((state) => [
+      state.voiceChat.agentId,
+      state.mutate,
+      state.voiceChat,
+      state.chatModel,
+      state.allowedMcpServers,
+      state.mcpList,
+    ]),
   );
+
+  const { agent } = useAgent(agentId);
 
   const [isClosing, setIsClosing] = useState(false);
   const startAudio = useRef<HTMLAudioElement>(null);
   const [useCompactView, setUseCompactView] = useState(true);
-  const router = useRouter();
 
-  // const useVoiceChat = useMemo<VoiceChatHook>(() => {
-  //   switch (voiceChat.options.provider) {
-  //     case "openai":
-  //       return OpenAIVoiceChat;
-  //     default:
-  //       return OpenAIVoiceChat;
-  //   }
-  // }, [voiceChat.options.provider]);
+  const toolMentions = useMemo<ChatMention[]>(() => {
+    if (!agentId) {
+      if (!allowedMcpServers) return [];
+      return mcpList
+        .filter((v) => {
+          return (
+            v.id in allowedMcpServers && allowedMcpServers[v.id]?.tools?.length
+          );
+        })
+        .flatMap((v) => {
+          const tools = allowedMcpServers[v.id].tools;
+          return tools.map((tool) => {
+            const toolInfo = v.toolInfo.find((t) => t.name === tool);
+            const mention: ChatMention = {
+              type: "mcpTool",
+              serverName: v.name,
+              serverId: v.id,
+              name: tool,
+              description: toolInfo?.description ?? "",
+            };
+            return mention;
+          });
+        });
+    }
+    return (
+      agent?.instructions.mentions?.filter((v) => v.type === "mcpTool") ?? []
+    );
+  }, [agentId, agent, mcpList, allowedMcpServers]);
 
   const {
     isListening,
@@ -129,7 +134,11 @@ export function ChatBotVoice() {
     startListening,
     stop,
     stopListening,
-  } = OpenAIVoiceChat(voiceChat.options.providerOptions);
+  } = OpenAIVoiceChat({
+    toolMentions,
+    agentId,
+    ...voiceChat.options.providerOptions,
+  });
 
   const startWithSound = useCallback(() => {
     if (!startAudio.current) {
@@ -143,35 +152,6 @@ export function ChatBotVoice() {
   const endVoiceChat = useCallback(async () => {
     setIsClosing(true);
     await safe(() => stop());
-    await safe(async () => {
-      if (!voiceChat.threadId) return;
-      const saveMessages = messages.filter(
-        (v) => v.completed && isNotEmptyUIMessage(v),
-      );
-      if (saveMessages.length === 0) {
-        return;
-      }
-      await fetch(`/api/chat/${voiceChat.threadId}`, {
-        method: "POST",
-        body: JSON.stringify({
-          messages: mergeConsecutiveMessages(saveMessages),
-          chatModel: model,
-          projectId: voiceChat.projectId,
-        }),
-      });
-
-      return true;
-    }).ifOk((isSaved) => {
-      if (isSaved) {
-        nextTick().then(() => {
-          mutate("threads");
-          router.push(`/chat/${voiceChat.threadId}`);
-          if (window.location.pathname === `/chat/${voiceChat.threadId}`) {
-            router.refresh();
-          }
-        });
-      }
-    });
     setIsClosing(false);
     appStoreMutate({
       voiceChat: {
@@ -179,7 +159,7 @@ export function ChatBotVoice() {
         isOpen: false,
       },
     });
-  }, [messages, voiceChat.threadId, voiceChat.projectId, model]);
+  }, [messages, model]);
 
   const statusMessage = useMemo(() => {
     if (isLoading) {
@@ -228,6 +208,27 @@ export function ChatBotVoice() {
     useCompactView,
   ]);
 
+  const mcpTools = useMemo<EnabledTools[]>(() => {
+    const mcpMentions = toolMentions.filter(
+      (v) => v.type === "mcpTool",
+    ) as Extract<ChatMention, { type: "mcpTool" }>[];
+
+    const groupByServer = groupBy(mcpMentions, "serverName");
+    return Object.entries(groupByServer).map(([serverName, tools]) => {
+      return {
+        groupName: serverName,
+        tools: tools.map((v) => ({
+          name: v.name,
+          description: v.description,
+        })),
+      };
+    });
+  }, [toolMentions]);
+
+  const tools = useMemo<EnabledTools[]>(() => {
+    return [...prependTools, ...mcpTools];
+  }, [prependTools, mcpTools]);
+
   useEffect(() => {
     return () => {
       if (isActive) {
@@ -238,9 +239,20 @@ export function ChatBotVoice() {
 
   useEffect(() => {
     if (voiceChat.isOpen) {
-      startWithSound();
+      // startWithSound();
     } else if (isActive) {
       stop();
+    }
+  }, [voiceChat.isOpen]);
+
+  useEffect(() => {
+    if (!voiceChat.isOpen && !isNull(voiceChat.agentId)) {
+      appStoreMutate((prev) => ({
+        voiceChat: {
+          ...prev.voiceChat,
+          agentId: undefined,
+        },
+      }));
     }
   }, [voiceChat.isOpen]);
 
@@ -253,6 +265,7 @@ export function ChatBotVoice() {
 
   useEffect(() => {
     if (voiceChat.isOpen) return;
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const isVoiceChatEvent = isShortcutEvent(e, Shortcuts.toggleVoiceChat);
       if (isVoiceChatEvent) {
@@ -262,8 +275,7 @@ export function ChatBotVoice() {
           voiceChat: {
             ...prev.voiceChat,
             isOpen: true,
-            threadId: undefined,
-            projectId: undefined,
+            agentId: undefined,
           },
         }));
       }
@@ -283,36 +295,57 @@ export function ChatBotVoice() {
                 userSelect: "text",
               }}
             >
-              <div className="flex items-center ">
+              {agent && (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button
-                      variant={"secondary"}
-                      size={"icon"}
-                      onClick={() => setUseCompactView(!useCompactView)}
+                    <div
+                      style={agent.icon?.style}
+                      className="size-9 items-center justify-center flex rounded-lg ring ring-secondary"
                     >
-                      {useCompactView ? (
-                        <MessageSquareMoreIcon />
-                      ) : (
-                        <MessagesSquareIcon />
-                      )}
-                    </Button>
+                      <Avatar className="size-6">
+                        <AvatarImage src={agent.icon?.value} />
+                        <AvatarFallback>
+                          {agent.name.slice(0, 1)}
+                        </AvatarFallback>
+                      </Avatar>
+                    </div>
                   </TooltipTrigger>
-                  <TooltipContent>
-                    {useCompactView
-                      ? t("VoiceChat.compactDisplayMode")
-                      : t("VoiceChat.conversationDisplayMode")}
+                  <TooltipContent side="bottom" className="p-3 max-w-xs">
+                    <div className="space-y-2">
+                      <div className="font-semibold text-sm">{agent.name}</div>
+                      {agent.description && (
+                        <div className="text-xs text-muted-foreground leading-relaxed">
+                          {agent.description}
+                        </div>
+                      )}
+                    </div>
                   </TooltipContent>
                 </Tooltip>
-              </div>
-              <DrawerTitle className="flex items-center gap-2 w-full">
-                <EnabledMcpToolsDropdown
-                  align="start"
-                  side="bottom"
-                  prependTools={prependTools}
-                />
+              )}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant={"secondary"}
+                    size={"icon"}
+                    onClick={() => setUseCompactView(!useCompactView)}
+                  >
+                    {useCompactView ? (
+                      <MessageSquareMoreIcon />
+                    ) : (
+                      <MessagesSquareIcon />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {useCompactView
+                    ? t("VoiceChat.compactDisplayMode")
+                    : t("VoiceChat.conversationDisplayMode")}
+                </TooltipContent>
+              </Tooltip>
 
-                <div className="flex-1" />
+              <EnabledToolsDropdown align="start" side="bottom" tools={tools} />
+
+              <DrawerTitle className="ml-auto">
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant={"ghost"} size={"icon"}>
@@ -560,14 +593,14 @@ function ConversationView({
                         ))}
                     </p>
                   );
-                } else if (part.type === "tool-invocation") {
+                } else if (isToolUIPart(part)) {
                   return (
                     <ToolMessagePart
                       key={index}
                       part={part}
                       showActions={false}
-                      message={message}
-                      isLast={part.toolInvocation.state != "result"}
+                      messageId={message.id}
+                      isLast={part.state.startsWith("input")}
                     />
                   );
                 }
@@ -588,15 +621,8 @@ function CompactMessageView({
 }) {
   const { toolParts, textPart } = useMemo(() => {
     const toolParts = messages
-      .filter((msg) =>
-        msg.parts.some((part) => part.type === "tool-invocation"),
-      )
-      .map(
-        (msg) =>
-          msg.parts.find(
-            (part) => part.type === "tool-invocation",
-          ) as ToolInvocationUIPart,
-      );
+      .filter((msg) => msg.parts.some(isToolUIPart))
+      .map((msg) => msg.parts.find(isToolUIPart));
 
     const textPart = messages.findLast((msg) => msg.role === "assistant")
       ?.parts[0] as TextPart;
@@ -607,7 +633,7 @@ function CompactMessageView({
     <div className="relative w-full h-full overflow-hidden">
       <div className="absolute bottom-6 max-h-[80vh] overflow-y-auto left-6 z-10 flex-col gap-2 hidden md:flex">
         {toolParts.map((toolPart, index) => {
-          const isExecuting = toolPart.toolInvocation.state !== "result";
+          const isExecuting = toolPart?.state.startsWith("input");
           if (!toolPart) return null;
           return (
             <Dialog key={index}>
@@ -620,7 +646,7 @@ function CompactMessageView({
                   >
                     <WrenchIcon className="size-3.5" />
                     <span className="text-sm font-bold min-w-0 truncate mr-auto">
-                      {toolPart.toolInvocation.toolName}
+                      {getToolName(toolPart)}
                     </span>
                     {isExecuting ? (
                       <Loader className="size-3.5 animate-spin" />
@@ -631,7 +657,7 @@ function CompactMessageView({
                 </div>
               </DialogTrigger>
               <DialogContent className="z-50 md:max-w-2xl! max-h-[80vh] overflow-y-auto p-8">
-                <DialogTitle>{toolPart.toolInvocation.toolName}</DialogTitle>
+                <DialogTitle>{getToolName(toolPart)}</DialogTitle>
                 <div className="flex flex-row gap-4 text-sm ">
                   <div className="w-1/2 min-w-0 flex flex-col">
                     <div className="flex items-center gap-2 mb-2 pt-2 pb-1 z-10">
@@ -639,7 +665,7 @@ function CompactMessageView({
                         Inputs
                       </h5>
                     </div>
-                    <JsonView data={toolPart.toolInvocation.args} />
+                    <JsonView data={toolPart.input} />
                   </div>
 
                   <div className="w-1/2 min-w-0 pl-4 flex flex-col">
@@ -650,9 +676,11 @@ function CompactMessageView({
                     </div>
                     <JsonView
                       data={
-                        toolPart.toolInvocation.state === "result"
-                          ? toolPart.toolInvocation.result
-                          : {}
+                        toolPart.state === "output-available"
+                          ? toolPart.output
+                          : toolPart.state == "output-error"
+                            ? toolPart.errorText
+                            : {}
                       }
                     />
                   </div>

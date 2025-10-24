@@ -1,17 +1,24 @@
 "use client";
 
 import { createAuthClient } from "better-auth/react"; // make sure to import from better-auth/react
-import { toast } from "sonner";
-import { handleErrorWithToast } from "ui/shared-toast";
+import { adminClient, inferAdditionalFields } from "better-auth/client/plugins";
+
+import { DEFAULT_USER_ROLE, USER_ROLES } from "app-types/roles";
+import { ac, admin, editor, user } from "./roles";
+import type { auth } from "./auth-instance";
 
 export const authClient = createAuthClient({
-  fetchOptions: {
-    onError(e) {
-      if (e.error.status === 429) {
-        toast.error("Too many requests. Please try again later.");
-        return;
-      }
-      handleErrorWithToast(e.error);
-    },
-  },
+  plugins: [
+    inferAdditionalFields<typeof auth>(),
+    adminClient({
+      defaultRole: DEFAULT_USER_ROLE,
+      adminRoles: [USER_ROLES.ADMIN],
+      ac,
+      roles: {
+        admin,
+        editor,
+        user,
+      },
+    }),
+  ],
 });

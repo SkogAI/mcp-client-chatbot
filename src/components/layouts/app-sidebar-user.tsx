@@ -25,31 +25,45 @@ import {
   Sun,
   MoonStar,
   ChevronRight,
+  Settings,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { appStore } from "@/app/store";
 import { BASE_THEMES, COOKIE_KEY_LOCALE, SUPPORTED_LOCALES } from "lib/const";
-import { capitalizeFirstLetter, cn } from "lib/utils";
+import { capitalizeFirstLetter, cn, fetcher } from "lib/utils";
 import { authClient } from "auth/client";
 import { useTranslations } from "next-intl";
 import useSWR from "swr";
 import { getLocaleAction } from "@/i18n/get-locale";
-import { useCallback } from "react";
+import { Suspense, useCallback } from "react";
 import { GithubIcon } from "ui/github-icon";
 import { DiscordIcon } from "ui/discord-icon";
+import { useThemeStyle } from "@/hooks/use-theme-style";
+import { BasicUser } from "app-types/user";
+import { getUserAvatar } from "lib/user/utils";
+import { Skeleton } from "ui/skeleton";
 
-export function AppSidebarUser() {
+export function AppSidebarUserInner(props: {
+  user?: BasicUser;
+}) {
+  const { data: user } = useSWR<BasicUser>(`/api/user/details`, fetcher, {
+    fallbackData: props.user,
+    suspense: true,
+    revalidateOnMount: false,
+    revalidateOnFocus: false,
+    shouldRetryOnError: false,
+    refreshInterval: 1000 * 60 * 10,
+  });
   const appStoreMutate = appStore((state) => state.mutate);
-  const { data } = authClient.useSession();
   const t = useTranslations("Layout");
-
-  const user = data?.user;
 
   const logout = () => {
     authClient.signOut().finally(() => {
       window.location.href = "/sign-in";
     });
   };
+
+  if (!user) return null;
 
   return (
     <SidebarMenu>
@@ -59,16 +73,19 @@ export function AppSidebarUser() {
             <SidebarMenuButton
               className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground bg-input/30 border"
               size={"lg"}
+              data-testid="sidebar-user-button"
             >
               <Avatar className="rounded-full size-8 border">
                 <AvatarImage
                   className="object-cover"
-                  src={user?.image || "/pf.png"}
-                  alt={user?.name || ""}
+                  src={getUserAvatar(user)}
+                  alt={user?.name || "User"}
                 />
                 <AvatarFallback>{user?.name?.slice(0, 1) || ""}</AvatarFallback>
               </Avatar>
-              <span className="truncate">{user?.email}</span>
+              <span className="truncate" data-testid="sidebar-user-email">
+                {user?.email}
+              </span>
               <ChevronsUpDown className="ml-auto" />
             </SidebarMenuButton>
           </DropdownMenuTrigger>
@@ -81,15 +98,20 @@ export function AppSidebarUser() {
               <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
                 <Avatar className="h-8 w-8 rounded-full">
                   <AvatarImage
-                    src={user?.image || "/pf.png"}
-                    alt={user?.name || ""}
+                    src={getUserAvatar(user)}
+                    alt={user?.name || "User"}
                   />
                   <AvatarFallback className="rounded-lg">
                     {user?.name?.slice(0, 1) || ""}
                   </AvatarFallback>
                 </Avatar>
                 <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">{user?.name}</span>
+                  <span
+                    className="truncate font-medium"
+                    data-testid="sidebar-user-name"
+                  >
+                    {user?.name}
+                  </span>
                   <span className="truncate text-xs text-muted-foreground">
                     {user?.email}
                   </span>
@@ -118,7 +140,7 @@ export function AppSidebarUser() {
             <DropdownMenuItem
               onClick={() => {
                 window.open(
-                  "https://github.com/cgoinglove/mcp-client-chatbot/issues/new",
+                  "https://github.com/cgoinglove/better-chatbot/issues/new",
                   "_blank",
                 );
               }}
@@ -135,6 +157,16 @@ export function AppSidebarUser() {
               <span>{t("joinCommunity")}</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
+
+            <DropdownMenuItem
+              onClick={() => appStoreMutate({ openUserSettings: true })}
+              className="cursor-pointer"
+              data-testid="user-settings-menu-item"
+            >
+              <Settings className="size-4 text-foreground" />
+              <span>User Settings</span>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onClick={logout} className="cursor-pointer">
               <LogOutIcon className="size-4 text-foreground" />
               <span>{t("signOut")}</span>
@@ -149,17 +181,9 @@ export function AppSidebarUser() {
 function SelectTheme() {
   const t = useTranslations("Layout");
 
-  const { theme = "slate", resolvedTheme, setTheme } = useTheme();
-  const base = theme.replace(/-dark$/, "");
-  const isDark = theme.endsWith("-dark") || resolvedTheme === "dark";
+  const { theme = "light", setTheme } = useTheme();
 
-  const onThemeSelect = (value: string) => {
-    setTheme(isDark ? `${value}-dark` : value);
-  };
-
-  const toggleDarkMode = () => {
-    setTheme(isDark ? base : `${base}-dark`);
-  };
+  const { themeStyle = "default", setThemeStyle } = useThemeStyle();
 
   return (
     <DropdownMenuSub>
@@ -168,8 +192,8 @@ function SelectTheme() {
         icon={
           <>
             <span className="text-muted-foreground text-xs min-w-0 truncate">
-              {`${capitalizeFirstLetter(base)} ${capitalizeFirstLetter(
-                isDark ? "dark" : "light",
+              {`${capitalizeFirstLetter(theme)} ${capitalizeFirstLetter(
+                themeStyle,
               )}`}
             </span>
             <ChevronRight className="size-4 ml-2" />
@@ -183,17 +207,17 @@ function SelectTheme() {
         <DropdownMenuSubContent className="w-48">
           <DropdownMenuLabel className="text-muted-foreground w-full flex items-center">
             <span className="text-muted-foreground text-xs mr-2 select-none">
-              {capitalizeFirstLetter(isDark ? "dark" : "light")}
+              {capitalizeFirstLetter(theme)}
             </span>
             <div className="flex-1" />
 
             <div
-              onClick={toggleDarkMode}
+              onClick={() => setTheme(theme === "light" ? "dark" : "light")}
               className="cursor-pointer border rounded-full flex items-center"
             >
               <div
                 className={cn(
-                  isDark &&
+                  theme === "dark" &&
                     "bg-accent ring ring-muted-foreground/40 text-foreground",
                   "p-1 rounded-full",
                 )}
@@ -202,7 +226,7 @@ function SelectTheme() {
               </div>
               <div
                 className={cn(
-                  !isDark &&
+                  theme === "light" &&
                     "bg-accent ring ring-muted-foreground/40 text-foreground",
                   "p-1 rounded-full",
                 )}
@@ -215,10 +239,10 @@ function SelectTheme() {
             {BASE_THEMES.map((t) => (
               <DropdownMenuCheckboxItem
                 key={t}
-                checked={base === t}
+                checked={themeStyle === t}
                 onClick={(e) => {
                   e.preventDefault();
-                  onThemeSelect(t);
+                  setThemeStyle(t);
                 }}
                 className="text-sm"
               >
@@ -268,5 +292,34 @@ function SelectLanguage() {
         </DropdownMenuSubContent>
       </DropdownMenuPortal>
     </DropdownMenuSub>
+  );
+}
+
+export function AppSidebarUserSkeleton() {
+  return (
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground bg-input/30 border"
+          size={"lg"}
+          data-testid="sidebar-user-button"
+        >
+          <Skeleton className="h-8 w-8 rounded-full" />
+          <Skeleton className="h-4 w-24" />
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    </SidebarMenu>
+  );
+}
+
+export function AppSidebarUser({
+  user,
+}: {
+  user?: BasicUser;
+}) {
+  return (
+    <Suspense fallback={<AppSidebarUserSkeleton />}>
+      <AppSidebarUserInner user={user} />
+    </Suspense>
   );
 }

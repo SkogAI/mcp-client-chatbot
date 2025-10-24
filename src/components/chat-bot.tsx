@@ -2,36 +2,32 @@
 
 import { useChat } from "@ai-sdk/react";
 import { toast } from "sonner";
-import {
-  ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PromptInput from "./prompt-input";
 import clsx from "clsx";
 import { appStore } from "@/app/store";
-import { cn, generateUUID, truncateString } from "lib/utils";
+import { cn, createDebounce, generateUUID, truncateString } from "lib/utils";
 import { ErrorMessage, PreviewMessage } from "./message";
 import { ChatGreeting } from "./chat-greeting";
 
 import { useShallow } from "zustand/shallow";
-import { UIMessage } from "ai";
+import {
+  DefaultChatTransport,
+  isToolUIPart,
+  lastAssistantMessageIsCompleteWithToolCalls,
+  TextUIPart,
+  UIMessage,
+} from "ai";
 
 import { safe } from "ts-safe";
 import { mutate } from "swr";
-import {
-  ChatApiSchemaRequestBody,
-  ChatMessageAnnotation,
-} from "app-types/chat";
+import { ChatApiSchemaRequestBody, ChatModel } from "app-types/chat";
 import { useToRef } from "@/hooks/use-latest";
 import { isShortcutEvent, Shortcuts } from "lib/keyboard-shortcuts";
 import { Button } from "ui/button";
 import { deleteThreadAction } from "@/app/api/chat/actions";
 import { useRouter } from "next/navigation";
-import { Loader } from "lucide-react";
+import { ArrowDown, Loader } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -41,19 +37,36 @@ import {
   DialogTitle,
 } from "ui/dialog";
 import { useTranslations } from "next-intl";
+import { Think } from "ui/think";
+import { useGenerateThreadTitle } from "@/hooks/queries/use-generate-thread-title";
+import dynamic from "next/dynamic";
+import { useMounted } from "@/hooks/use-mounted";
+import { getStorageManager } from "lib/browser-stroage";
+import { AnimatePresence, motion } from "framer-motion";
 
 type Props = {
   threadId: string;
   initialMessages: Array<UIMessage>;
   selectedChatModel?: string;
-  slots?: {
-    emptySlot?: ReactNode;
-    inputBottomSlot?: ReactNode;
-  };
 };
 
-export default function ChatBot({ threadId, initialMessages, slots }: Props) {
+const LightRays = dynamic(() => import("ui/light-rays"), {
+  ssr: false,
+});
+
+const Particles = dynamic(() => import("ui/particles"), {
+  ssr: false,
+});
+
+const debounce = createDebounce();
+
+const firstTimeStorage = getStorageManager("IS_FIRST");
+const isFirstTime = firstTimeStorage.get() ?? true;
+firstTimeStorage.set(false);
+
+export default function ChatBot({ threadId, initialMessages }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   const [
     appStoreMutate,
@@ -62,6 +75,9 @@ export default function ChatBot({ threadId, initialMessages, slots }: Props) {
     allowedAppDefaultToolkit,
     allowedMcpServers,
     threadList,
+    threadMentions,
+    pendingThreadMention,
+    threadImageToolModel,
   ] = appStore(
     useShallow((state) => [
       state.mutate,
@@ -70,57 +86,104 @@ export default function ChatBot({ threadId, initialMessages, slots }: Props) {
       state.allowedAppDefaultToolkit,
       state.allowedMcpServers,
       state.threadList,
+      state.threadMentions,
+      state.pendingThreadMention,
+      state.threadImageToolModel,
     ]),
   );
 
+  const generateTitle = useGenerateThreadTitle({
+    threadId,
+  });
+
+  const [showParticles, setShowParticles] = useState(isFirstTime);
+
+  const onFinish = useCallback(() => {
+    const messages = latestRef.current.messages;
+    const prevThread = latestRef.current.threadList.find(
+      (v) => v.id === threadId,
+    );
+    const isNewThread =
+      !prevThread?.title &&
+      messages.filter((v) => v.role === "user" || v.role === "assistant")
+        .length < 3;
+    if (isNewThread) {
+      const part = messages
+        .slice(0, 2)
+        .flatMap((m) =>
+          m.parts
+            .filter((v) => v.type === "text")
+            .map(
+              (p) =>
+                `${m.role}: ${truncateString((p as TextUIPart).text, 500)}`,
+            ),
+        );
+      if (part.length > 0) {
+        generateTitle(part.join("\n\n"));
+      }
+    } else if (latestRef.current.threadList[0]?.id !== threadId) {
+      mutate("/api/thread");
+    }
+  }, []);
+
+  const [input, setInput] = useState("");
+
   const {
     messages,
-    input,
-    setInput,
-    append,
     status,
-    reload,
     setMessages,
-    addToolResult,
+    addToolResult: _addToolResult,
     error,
+    sendMessage,
     stop,
   } = useChat({
     id: threadId,
-    api: "/api/chat",
-    initialMessages,
-    experimental_prepareRequestBody: ({ messages }) => {
-      window.history.replaceState({}, "", `/chat/${threadId}`);
-      const lastMessage = messages.at(-1)!;
-      vercelAISdkV4ToolInvocationIssueCatcher(lastMessage);
-      const request: ChatApiSchemaRequestBody = {
-        id: latestRef.current.threadId,
-        chatModel: latestRef.current.model,
-        toolChoice: latestRef.current.toolChoice,
-        allowedAppDefaultToolkit: latestRef.current.allowedAppDefaultToolkit,
-        allowedMcpServers: latestRef.current.allowedMcpServers,
-        message: lastMessage,
-      };
-      return request;
-    },
-    sendExtraMessageFields: true,
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    transport: new DefaultChatTransport({
+      prepareSendMessagesRequest: ({ messages, body, id }) => {
+        if (window.location.pathname !== `/chat/${threadId}`) {
+          console.log("replace-state");
+          window.history.replaceState({}, "", `/chat/${threadId}`);
+        }
+        const lastMessage = messages.at(-1)!;
+
+        const requestBody: ChatApiSchemaRequestBody = {
+          ...body,
+          id,
+          chatModel:
+            (body as { model: ChatModel })?.model ?? latestRef.current.model,
+          toolChoice: latestRef.current.toolChoice,
+          allowedAppDefaultToolkit: latestRef.current.mentions?.length
+            ? []
+            : latestRef.current.allowedAppDefaultToolkit,
+          allowedMcpServers: latestRef.current.mentions?.length
+            ? {}
+            : latestRef.current.allowedMcpServers,
+          mentions: latestRef.current.mentions,
+          message: lastMessage,
+          imageTool: {
+            model: latestRef.current.threadImageToolModel[threadId],
+          },
+        };
+        return { body: requestBody };
+      },
+    }),
+    messages: initialMessages,
     generateId: generateUUID,
     experimental_throttle: 100,
-    onFinish() {
-      if (threadList[0]?.id !== threadId) {
-        mutate("threads");
-      }
-    },
-    onError: (error) => {
-      console.error(error);
-
-      toast.error(
-        truncateString(error.message, 100) ||
-          "An error occured, please try again!",
-      );
-    },
+    onFinish,
   });
-
   const [isDeleteThreadPopupOpen, setIsDeleteThreadPopupOpen] = useState(false);
+
+  const addToolResult = useCallback(
+    async (result: Parameters<typeof _addToolResult>[0]) => {
+      await _addToolResult(result);
+      // sendMessage();
+    },
+    [_addToolResult],
+  );
+
+  const mounted = useMounted();
 
   const latestRef = useToRef({
     toolChoice,
@@ -128,7 +191,10 @@ export default function ChatBot({ threadId, initialMessages, slots }: Props) {
     allowedAppDefaultToolkit,
     allowedMcpServers,
     messages,
+    threadList,
     threadId,
+    mentions: threadMentions[threadId],
+    threadImageToolModel,
   });
 
   const isLoading = useMemo(
@@ -145,56 +211,89 @@ export default function ChatBot({ threadId, initialMessages, slots }: Props) {
     () =>
       initialMessages.length > 0 &&
       initialMessages.at(-1)?.id === messages.at(-1)?.id,
-    [initialMessages, messages],
+    [messages],
   );
-
-  const needSpaceClass = useCallback(
-    (index: number) => {
-      if (error || isInitialThreadEntry || index != messages.length - 1)
-        return false;
-      const message = messages[index];
-      if (message.role === "user") return false;
-      return true;
-    },
-    [messages, error],
-  );
-
-  const [isExecutingProxyToolCall, setIsExecutingProxyToolCall] =
-    useState(false);
 
   const isPendingToolCall = useMemo(() => {
     if (status != "ready") return false;
     const lastMessage = messages.at(-1);
     if (lastMessage?.role != "assistant") return false;
-    const annotation = lastMessage.annotations?.at(-1) as ChatMessageAnnotation;
-    if (annotation?.toolChoice != "manual") return false;
     const lastPart = lastMessage.parts.at(-1);
     if (!lastPart) return false;
-    if (lastPart.type != "tool-invocation") return false;
-    if (lastPart.toolInvocation.state != "call") return false;
+    if (!isToolUIPart(lastPart)) return false;
+    if (lastPart.state.startsWith("output")) return false;
     return true;
   }, [status, messages]);
 
-  const proxyToolCall = useCallback(
-    (answer: boolean) => {
-      if (!isPendingToolCall) throw new Error("Tool call is not supported");
-      setIsExecutingProxyToolCall(true);
-      return safe(async () => {
-        const lastMessage = messages.at(-1)!;
-        const lastPart = lastMessage.parts.at(-1)! as Extract<
-          UIMessage["parts"][number],
-          { type: "tool-invocation" }
-        >;
-        return addToolResult({
-          toolCallId: lastPart.toolInvocation.toolCallId,
-          result: answer,
-        });
-      })
-        .watch(() => setIsExecutingProxyToolCall(false))
-        .unwrap();
-    },
-    [isPendingToolCall, addToolResult],
-  );
+  const space = useMemo(() => {
+    if (!isLoading || error) return false;
+    const lastMessage = messages.at(-1);
+    if (lastMessage?.role == "user") return "think";
+    const lastPart = lastMessage?.parts.at(-1);
+    if (!lastPart) return "think";
+    const secondPart = lastMessage?.parts[1];
+    if (secondPart?.type == "text" && secondPart.text.length == 0)
+      return "think";
+    if (lastPart?.type == "step-start") {
+      return lastMessage?.parts.length == 1 ? "think" : "space";
+    }
+    return false;
+  }, [isLoading, messages.at(-1)]);
+
+  const particle = useMemo(() => {
+    return (
+      <AnimatePresence>
+        {showParticles && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 5 }}
+          >
+            <div className="absolute top-0 left-0 w-full h-full z-10">
+              <LightRays />
+            </div>
+            <div className="absolute top-0 left-0 w-full h-full z-10">
+              <Particles particleCount={400} particleBaseSize={10} />
+            </div>
+
+            <div className="absolute top-0 left-0 w-full h-full z-10">
+              <div className="w-full h-full bg-gradient-to-t from-background to-50% to-transparent z-20" />
+            </div>
+            <div className="absolute top-0 left-0 w-full h-full z-10">
+              <div className="w-full h-full bg-gradient-to-l from-background to-20% to-transparent z-20" />
+            </div>
+            <div className="absolute top-0 left-0 w-full h-full z-10">
+              <div className="w-full h-full bg-gradient-to-r from-background to-20% to-transparent z-20" />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    );
+  }, [showParticles]);
+
+  const handleFocus = useCallback(() => {
+    setShowParticles(false);
+    debounce(() => setShowParticles(true), 60000);
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const isScrollAtBottom = scrollHeight - scrollTop - clientHeight < 50;
+
+    setIsAtBottom(isScrollAtBottom);
+    handleFocus();
+  }, [handleFocus]);
+
+  const scrollToBottom = useCallback(() => {
+    containerRef.current?.scrollTo({
+      top: containerRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, []);
 
   useEffect(() => {
     appStoreMutate({ currentThreadId: threadId });
@@ -202,6 +301,18 @@ export default function ChatBot({ threadId, initialMessages, slots }: Props) {
       appStoreMutate({ currentThreadId: null });
     };
   }, [threadId]);
+
+  useEffect(() => {
+    if (pendingThreadMention && threadId) {
+      appStoreMutate((prev) => ({
+        threadMentions: {
+          ...prev.threadMentions,
+          [threadId]: [pendingThreadMention],
+        },
+        pendingThreadMention: undefined,
+      }));
+    }
+  }, [pendingThreadMention, threadId, appStoreMutate]);
 
   useEffect(() => {
     if (isInitialThreadEntry)
@@ -223,7 +334,7 @@ export default function ChatBot({ threadId, initialMessages, slots }: Props) {
       if (isLastMessageCopy) {
         const lastMessage = messages.at(-1);
         const lastMessageText = lastMessage!.parts
-          .filter((part) => part.type == "text")
+          .filter((part): part is TextUIPart => part.type == "text")
           ?.at(-1)?.text;
         if (!lastMessageText) return;
         navigator.clipboard.writeText(lastMessageText);
@@ -237,83 +348,104 @@ export default function ChatBot({ threadId, initialMessages, slots }: Props) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  return (
-    <div
-      className={cn(
-        emptyMessage && "justify-center pb-24",
-        "flex flex-col min-w-0 relative h-full",
-      )}
-    >
-      {emptyMessage ? (
-        slots?.emptySlot ? (
-          slots.emptySlot
-        ) : (
-          <ChatGreeting />
-        )
-      ) : (
-        <>
-          <div
-            className={"flex flex-col gap-2 overflow-y-auto py-6"}
-            ref={containerRef}
-          >
-            {messages.map((message, index) => {
-              const isLastMessage = messages.length - 1 === index;
-              return (
-                <PreviewMessage
-                  threadId={threadId}
-                  messageIndex={index}
-                  key={index}
-                  message={message}
-                  status={status}
-                  onPoxyToolCall={
-                    isLastMessage &&
-                    isPendingToolCall &&
-                    !isExecutingProxyToolCall
-                      ? proxyToolCall
-                      : undefined
-                  }
-                  isLoading={isLoading || isPendingToolCall}
-                  isError={!!error && isLastMessage}
-                  isLastMessage={isLastMessage}
-                  setMessages={setMessages}
-                  reload={reload}
-                  className={needSpaceClass(index) ? "min-h-[55dvh]" : ""}
-                />
-              );
-            })}
-            {status === "submitted" && messages.at(-1)?.role === "user" && (
-              <div className="min-h-[calc(55dvh-56px)]" />
-            )}
-            {error && <ErrorMessage error={error} />}
-            <div className="min-w-0 min-h-52" />
-          </div>
-        </>
-      )}
-      <div className={clsx(messages.length && "absolute bottom-14", "w-full")}>
-        <PromptInput
-          input={input}
-          append={append}
-          setInput={setInput}
-          isLoading={isLoading || isPendingToolCall}
-          onStop={stop}
-        />
-        {slots?.inputBottomSlot}
-      </div>
-      <DeleteThreadPopup
-        threadId={threadId}
-        onClose={() => setIsDeleteThreadPopupOpen(false)}
-        open={isDeleteThreadPopupOpen}
-      />
-    </div>
-  );
-}
+  useEffect(() => {
+    if (mounted) {
+      handleFocus();
+    }
+  }, [input]);
 
-function vercelAISdkV4ToolInvocationIssueCatcher(message: UIMessage) {
-  if (message.role != "assistant") return;
-  const lastPart = message.parts.at(-1);
-  if (lastPart?.type != "tool-invocation") return;
-  if (!message.toolInvocations)
-    message.toolInvocations = [lastPart.toolInvocation];
+  return (
+    <>
+      {particle}
+      <div
+        className={cn(
+          emptyMessage && "justify-center pb-24",
+          "flex flex-col min-w-0 relative h-full z-40",
+        )}
+      >
+        {emptyMessage ? (
+          <ChatGreeting />
+        ) : (
+          <>
+            <div
+              className={"flex flex-col gap-2 overflow-y-auto py-6 z-10"}
+              ref={containerRef}
+              onScroll={handleScroll}
+            >
+              {messages.map((message, index) => {
+                const isLastMessage = messages.length - 1 === index;
+                return (
+                  <PreviewMessage
+                    threadId={threadId}
+                    messageIndex={index}
+                    prevMessage={messages[index - 1]}
+                    key={message.id}
+                    message={message}
+                    status={status}
+                    addToolResult={addToolResult}
+                    isLoading={isLoading || isPendingToolCall}
+                    isLastMessage={isLastMessage}
+                    setMessages={setMessages}
+                    sendMessage={sendMessage}
+                    className={
+                      isLastMessage &&
+                      message.role != "user" &&
+                      !space &&
+                      message.parts.length > 1
+                        ? "min-h-[calc(55dvh-40px)]"
+                        : ""
+                    }
+                  />
+                );
+              })}
+              {space && (
+                <>
+                  <div className="w-full mx-auto max-w-3xl px-6 relative">
+                    <div className={space == "space" ? "opacity-0" : ""}>
+                      <Think />
+                    </div>
+                  </div>
+                  <div className="min-h-[calc(55dvh-56px)]" />
+                </>
+              )}
+
+              {error && <ErrorMessage error={error} />}
+              <div className="min-w-0 min-h-52" />
+            </div>
+          </>
+        )}
+
+        <div
+          className={clsx(
+            messages.length && "absolute bottom-14",
+            "w-full z-10",
+          )}
+        >
+          <div className="max-w-3xl mx-auto relative flex justify-center items-center -top-2">
+            <ScrollToBottomButton
+              show={!isAtBottom && messages.length > 0}
+              onClick={scrollToBottom}
+            />
+          </div>
+
+          <PromptInput
+            input={input}
+            threadId={threadId}
+            sendMessage={sendMessage}
+            setInput={setInput}
+            isLoading={isLoading || isPendingToolCall}
+            onStop={stop}
+            onFocus={isFirstTime ? undefined : handleFocus}
+          />
+        </div>
+        <DeleteThreadPopup
+          threadId={threadId}
+          onClose={() => setIsDeleteThreadPopupOpen(false)}
+          open={isDeleteThreadPopupOpen}
+        />
+      </div>
+    </>
+  );
 }
 
 function DeleteThreadPopup({
@@ -355,5 +487,40 @@ function DeleteThreadPopup({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+interface ScrollToBottomButtonProps {
+  show: boolean;
+  onClick: () => void;
+  className?: string;
+}
+
+function ScrollToBottomButton({
+  show,
+  onClick,
+  className,
+}: ScrollToBottomButtonProps) {
+  return (
+    <AnimatePresence>
+      {show && (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.8 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.8 }}
+          transition={{ duration: 0.2, ease: "easeInOut" }}
+          className={className}
+        >
+          <Button
+            onClick={onClick}
+            className="shadow-lg backdrop-blur-sm border transition-colors"
+            size="icon"
+            variant="ghost"
+          >
+            <ArrowDown />
+          </Button>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
