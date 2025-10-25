@@ -67,6 +67,14 @@ const staticModels = {
     "deepseek-r1:free": openrouter("deepseek/deepseek-r1-0528:free"),
     "deepseek-v3:free": openrouter("deepseek/deepseek-chat-v3-0324:free"),
     "gemini-2.0-flash-exp:free": openrouter("google/gemini-2.0-flash-exp:free"),
+    "claude-sonnet-4.5": openrouter("anthropic/claude-sonnet-4.5"),
+    "claude-sonnet-4": openrouter("anthropic/claude-sonnet-4"),
+    "gpt-4o": openrouter("openai/gpt-4o"),
+    "gpt-4o-mini": openrouter("openai/gpt-4o-mini"),
+    "gemini-2.0-flash": openrouter("google/gemini-2.0-flash-exp"),
+    "llama-3.3-70b": openrouter("meta-llama/llama-3.3-70b-instruct"),
+    "deepseek-r1": openrouter("deepseek/deepseek-r1"),
+    "deepseek-v3": openrouter("deepseek/deepseek-chat"),
   },
 };
 
