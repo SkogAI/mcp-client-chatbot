@@ -4,9 +4,9 @@ services:
       context: ..
       dockerfile: ./docker/Dockerfile
     ports:
-      - "3002:3002"
+      - "3000:3000"
     environment:
-      - NO_HTTPS=1
+      - NO_HTTPS=0
     env_file:
       - .env
     dns:

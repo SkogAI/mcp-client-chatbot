@@ -167,6 +167,9 @@ importers:
       json-schema:
         specifier: ^0.4.0
         version: 0.4.0
+      list:
+        specifier: ^2.0.19
+        version: 2.0.19
       lucide-react:
         specifier: ^0.486.0
         version: 0.486.0(react@19.2.0)
@@ -4666,6 +4669,9 @@ packages:
     resolution: {integrity: sha512-s1gphtDbV4bmW1eylXpVMk2u7is7YsrLl8hzrtvC70h4ByhcMLZFY01Fx05ZUDNuv1H8HO4E+e2zgejV1jVwNw==}
     engines: {node: '>=20.17'}
     hasBin: true
+
+  list@2.0.19:
+    resolution: {integrity: sha512-nnVaRp4RaMAQkCpypTThsdxKqgPMiSwJq93eAm2/IbpUa8sd04XKBhkKu+bMk63HmdjK8b8Cuh4xARHWX2ye/Q==}
 
   listr2@9.0.5:
     resolution: {integrity: sha512-ME4Fb83LgEgwNw96RKNvKV4VTLuXfoKudAmm2lP8Kk87KaMK0/Xrx/aAkMWmT8mDb+3MlFDspfbCs7adjRxA2g==}
@@ -11127,6 +11133,8 @@ snapshots:
       pidtree: 0.6.0
       string-argv: 0.3.2
       yaml: 2.8.1
+
+  list@2.0.19: {}
 
   listr2@9.0.5:
     dependencies:
